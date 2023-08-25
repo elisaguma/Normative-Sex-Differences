@@ -2,10 +2,10 @@
 Here, we investigate sex differences in structural MRI derived measures of brain volume in both humans and mice.
 
 This repository contains all of the data, code, and text necessary to rerun analyses found in the preprint:
-Elisa Guma, Antoine Beauchamp, Siyuan Liu, Elizabeth Levitis, Jacob Ellegood, Linh Pham, Rogier B Mars, Armin Raznahan *, Jason P Lerch *, (2023). Comparative neuroimaging of sex differences in human and mouse brain anatomy, Preprint:
+Elisa Guma, Antoine Beauchamp, Siyuan Liu, Elizabeth Levitis, Jacob Ellegood, Linh Pham, Rogier B Mars, Armin Raznahan *, Jason P Lerch *, (2023). Comparative neuroimaging of sex differences in human and mouse brain anatomy, Preprint: https://doi.org/10.1101/2023.08.23.554334
 *Equal contribution
 
-Article accessible here:
+Article accessible here: https://www.biorxiv.org/content/10.1101/2023.08.23.554334v1
 
 # Project overview
 
