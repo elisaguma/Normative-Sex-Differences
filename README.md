@@ -86,7 +86,7 @@ _X_chromosome_genes.csv:_ list of x-chromosome genes that are also homologous
 
 _tree_tools.R_: tools required to prune the tree, useful for script in analysis_scripts/cross_species/ folder.
 
-**Sex hormone files: **
+**Sex hormone files:**
 
 Homologous sex hormone genes: _sex_hormone_genes_short.csv,_ 
 
