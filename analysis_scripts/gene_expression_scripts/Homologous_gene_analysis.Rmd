@@ -1,0 +1,949 @@
+---
+title: "Homologous_gene_analsysi"
+author: "Elisa Guma"
+date: "5/16/2023"
+output: html_document
+---
+
+# Load in necessary libraries
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(RMINC)
+library(data.tree)
+library(ggrepel)
+library(ggplot2)
+library(ggseg)
+library(readr)
+library(sva)
+library(corrplot)
+library(WRS2)
+library(reshape2)
+library(olsrr)
+source('/Users/gumae2/Documents/Humouse/input_data/tree_tools.R')
+```
+
+## Load in homologous gene expression data
+```{r}
+df_mouse_homologs <- readRDS("../input_data/gene_expression/aggregated_data/transposed_homologous_mouse_genes.RDS") %>% as.data.frame()
+
+df_human_homologs <- readRDS("../input_data/gene_expression/aggregated_data/transposed_homologous_human_genes_weighted.RDS") %>% as.data.frame()
+
+homologous_genes <- read.csv("../input_data/gene_expression/raw_data_files/MouseHumanGeneHomologs_edited.csv")
+```
+
+# Reflect left hemisphere to right hemisphere
+```{r}
+df_human_homologs$`right Bed nuclei of the stria terminalis` <- df_human_homologs$`left Bed nuclei of the stria terminalis`
+df_human_homologs$`right Dentate gyrus, molecular layer` <- df_human_homologs$`left Dentate gyrus, molecular layer`
+df_human_homologs$`right Field CA3` <- df_human_homologs$`left Field CA3`
+df_human_homologs$`right Hypothalamus` <- df_human_homologs$`left Hypothalamus`
+df_human_homologs <-dplyr::rename(df_human_homologs,`Brainstem`=`Brain Stem`)
+```
+
+#Filter data
+```{r}
+df_mouse_homologs_filt <- dplyr::select(df_mouse_homologs,-ends_with("Medial amygdalar nucleus"),
+                                -ends_with("Medial preoptic nucleus"))# ,-ends_with("Ventral orbital area"))
+df_human_homologs_filt <- df_human_homologs
+```
+
+#Find matching homologous genes
+```{r}
+homologous_genes$Key %>% as.factor()
+homologous_genes$Mouse %>% as.factor()
+df_mouse_homologs_filt_1 <-  dplyr::rename(df_mouse_homologs_filt,`Mouse` = `gene`)
+homologous_genes_mouse_1 <- left_join(df_mouse_homologs_filt_1, homologous_genes, by = "Mouse", unmatched = "drop")
+homologous_genes_mouse_filt <- homologous_genes_mouse_1[, c("Mouse", "Key")]
+
+homologous_genes$Human %>% as.factor()
+df_human_homologs_filt_1 <-  dplyr::rename(df_human_homologs_filt,`Human` = `gene`)
+homologous_genes_human1 <- left_join(df_human_homologs_filt_1, homologous_genes, by = "Human", unmatched = "drop")
+homologous_genes_human_filt <- homologous_genes_human1[, c("Human", "Key")]
+
+conjunction_genes <- merge(homologous_genes_mouse_filt, homologous_genes_human_filt, by="Key")
+```
+
+# Rilter by matching homologous genes
+```{r}
+df_mouse_homologs_filt1 <- left_join(conjunction_genes, df_mouse_homologs_filt_1, by="Mouse")
+df_mouse_homologs_filt_final <- dplyr::select(df_mouse_homologs_filt1, -"Key",	-"Human")
+df_mouse_homologs_filt_final <-  dplyr::rename(df_mouse_homologs_filt_final,`gene` = `Mouse`)
+
+df_human_homologs_filt1 <- left_join(conjunction_genes, df_human_homologs_filt_1, by="Human")
+df_human_homologs_filt_final <- dplyr::select(df_human_homologs_filt1, -"Key",	-"Mouse")
+df_human_homologs_filt_final <-  dplyr::rename(df_human_homologs_filt_final,`gene` = `Human`)
+```
+
+## Load in chromosome information for mouse
+```{r}
+df_mouse_chromosomes_allen <- as_tibble(data.table::fread("../input_data/gene_expression/mouse_chromosome_fullinfo.csv", header = TRUE))
+df_mouse_chromosomes_allen_filt <- dplyr::select(df_mouse_chromosomes_allen, "acronym", "chromosome_id")
+df_mouse_chromosomes_allen_filt <-dplyr::rename(df_mouse_chromosomes_allen_filt,`gene`= acronym)
+
+df_mouse_key_allen <- as_tibble(data.table::fread("../input_data/gene_expression/chromosome_key_allen.csv", header = TRUE))
+df_mouse_key_allen_filt <- dplyr::select(df_mouse_key_allen, "id", "name")
+df_mouse_key_allen_filt <-dplyr::rename(df_mouse_key_allen_filt,`chromosome_id`=id)
+df_mouse_key_allen_filt <-dplyr::rename(df_mouse_key_allen_filt,`chromosome`=name)
+
+merged_mouse_chromosome_info <- inner_join(df_mouse_key_allen_filt, df_mouse_chromosomes_allen_filt, by="chromosome_id") %>% na.omit()
+df_mouse_chromosomes_filt <- merged_mouse_chromosome_info[!duplicated(merged_mouse_chromosome_info), ]
+```
+
+
+## Load in chromosome information
+```{r}
+df_human_chromosomes <- as_tibble(data.table::fread("../input_data/gene_expression/chromosome_info/human_chromosome_genes.csv", header = TRUE))
+
+df_human_chromosomes_filt <- dplyr::select(df_human_chromosomes, "chromosome", "gene")
+df_mouse_chromosomes_filt <- dplyr::select(df_mouse_chromosomes_filt, "chromosome", "gene")
+
+df_human_homologs_filt_final_chromo <- left_join(df_human_homologs_filt_final, df_human_chromosomes_filt, by="gene")
+df_mouse_homologs_filt_final_chromo <- left_join(df_mouse_homologs_filt_final, df_mouse_chromosomes_filt, by="gene") %>% 
+  na.omit() %>% filter(!duplicated("gene"))
+```
+
+## Scale matrices
+```{r}
+mouse_homologs1 <- df_mouse_homologs_filt_final_chromo[,2:57]
+new_order = sort(colnames(mouse_homologs1))
+mouse_homologs2 <- mouse_homologs1[, new_order]
+mouse_homologs <- sapply(mouse_homologs2, as.numeric)
+demo_mouse <- dplyr::select(df_mouse_homologs_filt_final_chromo, "gene", "chromosome")
+
+zscored_mouse_homologous_genes <- matrix(0, nrow = nrow(mouse_homologs), ncol = ncol(mouse_homologs))
+for(j in 1:ncol(mouse_homologs)){
+  mu <- mean(mouse_homologs[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_homologs[,j]) #And standard deviations
+  zscored_mouse_homologous_genes[,j] <- (mouse_homologs[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscored_mouse_homologous_genes)<-colnames(mouse_homologs)
+df_zscored_mouse_homologous_genes <- cbind(demo_mouse, zscored_mouse_homologous_genes) %>% as_tibble
+```
+
+## Scale matrices
+```{r}
+human_homologs1 <- df_human_homologs_filt_final_chromo[,2:57]
+new_order_h = sort(colnames(human_homologs1))
+human_homologs2 <- human_homologs1[, new_order_h]
+human_homologs <- sapply(human_homologs2, as.numeric)
+demo_human <- dplyr::select(df_human_homologs_filt_final_chromo, "gene", "chromosome")
+
+zscored_human_homologous_genes <- matrix(0, nrow = nrow(human_homologs), ncol = ncol(human_homologs))
+for(j in 1:ncol(human_homologs)){
+  mu <- mean(human_homologs[,j]) 
+  sigma <- sd(human_homologs[,j])
+  zscored_human_homologous_genes[,j] <- (human_homologs[,j] - mu)/sigma 
+}
+colnames(zscored_human_homologous_genes)<-colnames(human_homologs)
+df_zscored_human_homologous_genes <- cbind(demo_human, zscored_human_homologous_genes) %>% as_tibble
+```
+
+
+## Correlate human and mouse expression per ROI
+Correlate effect sizes such that column 1 is correlated with column 2 etc...
+```{r}
+zscored_human_homologous_genes %>% as.matrix()
+zscored_mouse_homologous_genes %>% as.matrix()
+corr_expression <- rep(0, 56)
+for(i in 1:56) {
+  corr_expression[i] <- cor(zscored_human_homologous_genes[,i], zscored_mouse_homologous_genes[,i])}
+summary(corr_expression)
+
+label <- colnames(zscored_human_homologous_genes)
+df_corr_expression <- cbind(label, corr_expression) %>% as_tibble()
+#write.csv(df_corr_expression, file="../input_data/gene_expression/other_analysis_files/df_corr_expression.csv")
+```
+
+## Create correlation matrix
+```{r}
+corrmat <- matrix(NA, nrow = (ncol(zscored_human_homologous_genes)-1), ncol=(ncol(zscored_human_homologous_genes)-1), dimnames = list(colnames(zscored_human_homologous_genes)[-1], colnames(zscored_human_homologous_genes)[-1]))
+
+corrmat <- cor(zscored_human_homologous_genes, zscored_mouse_homologous_genes)
+```
+
+#Cross-ROI correlation
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(grid))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(ggplotify))
+suppressPackageStartupMessages(library(ggnewscale))
+suppressPackageStartupMessages(library(RMINC))
+suppressPackageStartupMessages(library(MRIcrotome))
+suppressPackageStartupMessages(library(data.tree))
+suppressPackageStartupMessages(library(RColorBrewer))
+
+cmap <- colorRampPalette(rev(c("#67001F", "#B2182B", "#D6604D", "#F4A582", "#FDDBC7", "#FFFFFF", "#D1E5F0", "#92C5DE", "#4393C3", "#2166AC", "#053061")))(100)
+#Generate similarity matrix heatmap and convert to ggplot object
+
+fig1_heatmap_ggplot <- pheatmap(corrmat,color = cmap) %>% as.ggplot()
+```
+
+
+# Load in anatomical data
+
+## volumes
+```{r}
+df_combat_vols <- readRDS("../input_data/mouse_anatomy/Mouse_homologs_aggregated_postcombat.RDS") %>% as.data.frame()
+human_HCP_data_homologs <- readRDS("../input_data/human_anatomy/HCP_homologs_aggregated.RDS") %>% as.data.frame()
+```
+
+## Clean up data to match transcriptional ROIs
+```{r}
+df_mouse_vols <- dplyr::select(df_combat_vols, -ends_with("Medial amygdalar nucleus"),	-ends_with("Medial preoptic nucleus"))
+                               
+df_human_vols <- dplyr::select(human_HCP_data_homologs,-ends_with("amygdalar nucleus"),	-ends_with("Medial preoptic nucleus"))
+```
+
+# Calculate z-scores for mouse
+```{r}
+mouse_vols <- df_mouse_vols[,11:ncol(df_mouse_vols)] %>% as.matrix()
+mouse_demo <- df_mouse_vols[,c(1:10)]
+
+zscores_volumes <- matrix(0, nrow = nrow(mouse_vols), ncol = ncol(mouse_vols))
+for(j in 1:ncol(mouse_vols)){
+  mu <- mean(mouse_vols[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_vols[,j]) #And standard deviations
+  zscores_volumes[,j] <- (mouse_vols[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscores_volumes)<-colnames(mouse_vols)
+df_zscored_mouse_homologs <- mouse_demo %>%  cbind(zscores_volumes)
+```
+
+### With TBV covariate
+Tun the linear model testing for group, correcting for total tissue volume to extract standardized beta values
+```{r}
+sexdiff_mouse_lm_wTBV <- anatLm(~ Mouse_Sex+Background + total_tissue_volume + AGE_cent , df_zscored_mouse_homologs,
+                             df_zscored_mouse_homologs[,11:ncol(df_zscored_mouse_homologs)])
+FDR_sexdiff_mouse_wTBV <- anatFDR(sexdiff_mouse_lm_wTBV)
+FDR_sexdiff_mouse_wTBV
+
+Sex_mouse_model_outputs_wTBV <- sexdiff_mouse_lm_wTBV %>% as.data.frame()
+Sex_mouse_model_outputs_wTBV$label <- rownames(Sex_mouse_model_outputs_wTBV)
+```
+
+## Zscore Human Data
+```{r}
+human_vols <- df_human_vols[,7:ncol(df_human_vols)] 
+HCP_demo <- df_human_vols[,1:6]
+
+zscores_HCP <- matrix(0, nrow = nrow(human_vols), ncol = ncol(human_vols))
+for(j in 1:ncol(human_vols)){
+  mu <- mean(human_vols[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(human_vols[,j]) #And standard deviations
+  zscores_HCP[,j] <- (human_vols[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+
+### Assign column names and "rebind" demographics data
+colnames(zscores_HCP)<-colnames(human_vols)
+df_human_homologs <- HCP_demo %>% cbind(zscores_HCP) 
+```
+
+
+### With TBV covariate
+Here we run a linear model testing for group differences (XXY vs XY) covarying for age and total tissue volume so that we can extract standardized beta values for each region of interest.
+```{r}
+Sex_diffs_homologs_lm_wTBV= anatLm(~ Sex + AGE_cent + BrainSegVolNotVent.y, df_human_homologs,
+                             df_human_homologs[,7:ncol(df_human_homologs)])
+FDR_Sex_Lm_wTBV_zscore <- anatFDR(Sex_diffs_homologs_lm_wTBV)
+FDR_Sex_Lm_wTBV_zscore
+
+Human_sex_model_outputs_wTBV <- Sex_diffs_homologs_lm_wTBV %>% as.data.frame()
+Human_sex_model_outputs_wTBV$label <- rownames(Human_sex_model_outputs_wTBV)
+```
+```{r}
+Human_sex_model_outputs_wTBV_filtered <- dplyr::select(Human_sex_model_outputs_wTBV, "label", "beta-SexM")
+Sex_mouse_model_outputs_wTBV_filtered <- dplyr::select(Sex_mouse_model_outputs_wTBV, "label", "beta-Mouse_SexM")
+
+df_homologous_anatomical_betas<-merge(Human_sex_model_outputs_wTBV_filtered, Sex_mouse_model_outputs_wTBV_filtered, by="label")
+df_homologous_anatomical_betas$label <- as.character(df_homologous_anatomical_betas$label)
+
+df_homologous_anatomical_betas$anat_dot_prod <- df_homologous_anatomical_betas$`beta-SexM` * df_homologous_anatomical_betas$`beta-Mouse_SexM`
+df_homologous_anatomical_betas$label <- gsub("Brain stem", "Brainstem", df_homologous_anatomical_betas$label)
+```
+
+## Annotate Region based on whether they are cortex or non-cortex
+```{r}
+df_homologous_anatomical_betas$cort_vs_subcort <- df_homologous_anatomical_betas$label
+
+df_homologous_anatomical_betas$cort_vs_subcort[1] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[2] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[3] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[4] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[5:8] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[9] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[10:15]<- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[16:23] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[24] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[25] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[26] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[27] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[28:30] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[31] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[32] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[33] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[34:37] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[38] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[39:44] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[45:52] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[53] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[54] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[55] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[56] <- "Cortex"
+```
+
+# Correlate anatomical effects
+Calculate correlations
+```{r}
+pbcor(df_homologous_anatomical_betas$`beta-SexM`,df_homologous_anatomical_betas$`beta-Mouse_SexM`)
+```
+### Plot anatomical similarity
+```{r}
+anatomy_subset_plot <- ggplot(df_homologous_anatomical_betas, aes(x=`beta-SexM`, y=`beta-Mouse_SexM`, 
+                                                              label=label)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 15)+
+  geom_smooth(method = MASS::rlm) + 
+  theme_classic()+xlab("Human Effect Size")+ ylab("Mouse Effect Size")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="none")+xlim(-0.6,0.6)+ylim(-0.6,0.6)+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+anatomy_subset_plot
+```
+
+# Correlate anatomical by transcriptional effects
+Calculate correlations
+```{r}
+expression_correlation <- read.csv("../input_data/gene_expression/other_analysis_files/df_corr_expression.csv")
+expression_correlation <- expression_correlation %>% mutate(label = str_replace(label, "left","Left"))
+expression_correlation <- expression_correlation %>% mutate(label = str_replace(label, "right","Right")) %>% as.data.frame()
+expression <- expression_correlation$corr_expression 
+
+df_homologous_anatomy_transcription <-merge(df_homologous_anatomical_betas, expression_correlation, by="label") %>% as.data.frame()
+
+df_homologous_anatomy_transcription <- cbind(df_homologous_anatomical_betas, expression)
+pbcor(df_homologous_anatomy_transcription$anat_dot_prod, df_homologous_anatomy_transcription$expression)
+```
+### Plot anatomy vs transcription
+```{r}
+anatomy_transcription_plot <- ggplot(df_homologous_anatomy_transcription, aes(x=anat_dot_prod, y=expression, 
+                                                              label=label)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) + 
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="none")+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+anatomy_transcription_plot
+```
+
+# Correlate anatomical by transcriptional effects in cortex vs non cortex
+Calculate correlations
+```{r}
+df_cortex <-df_homologous_anatomy_transcription %>% filter(cort_vs_subcort == "Cortex")
+df_noncortex <-df_homologous_anatomy_transcription %>% filter(cort_vs_subcort == "Not cortex")
+
+#Cortex
+pbcor(df_cortex$anat_dot_prod, df_cortex$expression)
+#Non cortex
+pbcor(df_noncortex$anat_dot_prod, df_noncortex$expression)
+
+## plot
+cort_subcort_plot <- ggplot(df_homologous_anatomy_transcription, aes(x=anat_dot_prod, y=expression, 
+                                                              label=label, group=cort_vs_subcort, col=cort_vs_subcort)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) +
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="bottom")+
+  scale_fill_manual(values=c("springgreen4", "mediumorchid4"))+ 
+  scale_color_manual(values = c("springgreen4", "mediumorchid4"))+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+cort_subcort_plot
+```
+
+## Calculate Cook's Distance for Each Relationship
+```{r}
+df_subest <- df_homologous_anatomy_transcription[,c(1,4,5,6)]
+
+lm_1 <- lm(anat_dot_prod ~ expression, data = df_subest)
+summary(lm_1)
+df_subest$df_cook_distance<- cooks.distance(lm_1)
+ols_plot_cooksd_bar(lm_1)
+arrange(df_subest, desc(df_cook_distance)) %>% filter(df_cook_distance>0.071)
+```
+
+# Correlate anatomical by transcriptional effects excluding BNST
+Calculate correlations
+```{r}
+df_homologous_anatomy_transcription_noBNST <- filter(df_homologous_anatomy_transcription, !label %in% c("Left Bed nuclei of the stria terminalis", 
+                                                                                               "Right Bed nuclei of the stria terminalis"))
+pbcor(df_homologous_anatomy_transcription_noBNST$anat_dot_prod, df_homologous_anatomy_transcription_noBNST$expression)
+```
+### Plot anatomy vs transcription
+```{r}
+anatomy_transcription_plot <- ggplot(df_homologous_anatomy_transcription_noBNST, aes(x=anat_dot_prod, y=expression, 
+                                                              label=label)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) + 
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="none")+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+anatomy_transcription_plot
+```
+
+# Correlate anatomical by transcriptional effects in cortex vs non cortex
+Calculate correlations
+```{r}
+df_cortex_noBNST <-df_homologous_anatomy_transcription_noBNST %>% filter(cort_vs_subcort == "Cortex")
+df_noncortex_noBNST <-df_homologous_anatomy_transcription_noBNST %>% filter(cort_vs_subcort == "Not cortex")
+
+#Cortex
+pbcor(df_cortex_noBNST$anat_dot_prod, df_cortex_noBNST$expression)
+#Non cortex
+pbcor(df_noncortex_noBNST$anat_dot_prod, df_noncortex_noBNST$expression)
+
+cort_subcort_plot <- ggplot(df_homologous_anatomy_transcription_noBNST, aes(x=anat_dot_prod, y=expression, 
+                                                              label=label, group=cort_vs_subcort, col=cort_vs_subcort)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) +
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="bottom")+
+  scale_fill_manual(values=c("springgreen4", "mediumorchid4"))+ 
+  scale_color_manual(values = c("springgreen4", "mediumorchid4"))+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+cort_subcort_plot
+```
+
+
+# Sex chromosome 
+```{r}
+df_human_homologs_filt_final_sexchromo1 <- dplyr::filter(df_human_homologs_filt_final_chromo, chromosome %in% c("X","Y")) 
+df_mouse_homologs_filt_final_sexchromo1 <- dplyr::filter(df_mouse_homologs_filt_final_chromo, chromosome %in% c("X", "Y"))
+human_Xchromo <- df_human_homologs_filt_final_sexchromo1$gene %>% as.data.frame()
+mouse_Xchromo <- df_mouse_homologs_filt_final_sexchromo1$gene %>% as.data.frame()
+x_chromosome_genes <- cbind(human_Xchromo, mouse_Xchromo)
+#write.csv(x_chromosome_genes, file="../input_data/gene_expression/other_analysis_files/x_chromosome_genes.csv")
+```
+
+## Scale matrices with XY chromosomes
+```{r}
+mouse_homologs1 <- df_mouse_homologs_filt_final_sexchromo1[,2:57]
+new_order = sort(colnames(mouse_homologs1))
+mouse_homologs2 <- mouse_homologs1[, new_order]
+mouse_homologs <- sapply(mouse_homologs2, as.numeric)
+demo_mouse <- dplyr::select(df_mouse_homologs_filt_final_sexchromo1, "gene", "chromosome")
+
+zscored_mouse_homologous_XYgenes <- matrix(0, nrow = nrow(mouse_homologs), ncol = ncol(mouse_homologs))
+for(j in 1:ncol(mouse_homologs)){
+  mu <- mean(mouse_homologs[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_homologs[,j]) #And standard deviations
+  zscored_mouse_homologous_XYgenes[,j] <- (mouse_homologs[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscored_mouse_homologous_XYgenes)<-colnames(mouse_homologs)
+df_zscored_mouse_homologous_XYgenes <- cbind(demo_mouse, zscored_mouse_homologous_XYgenes) %>% as_tibble
+```
+
+## Scale matrices XY Chromosomes
+```{r}
+human_homologs1 <- df_human_homologs_filt_final_sexchromo1[,2:57]
+new_order_h = sort(colnames(human_homologs1))
+human_homologs2 <- human_homologs1[, new_order_h]
+human_homologs <- sapply(human_homologs2, as.numeric)
+demo_human <- dplyr::select(df_human_homologs_filt_final_sexchromo1, "gene", "chromosome")
+
+zscored_human_homologous_XYgenes <- matrix(0, nrow = nrow(human_homologs), ncol = ncol(human_homologs))
+for(j in 1:ncol(human_homologs)){
+  mu <- mean(human_homologs[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(human_homologs[,j]) #And standard deviations
+  zscored_human_homologous_XYgenes[,j] <- (human_homologs[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscored_human_homologous_XYgenes)<-colnames(human_homologs)
+df_zscored_human_homologous_XYgenes <- cbind(demo_human, zscored_human_homologous_XYgenes) %>% as_tibble
+```
+
+## Correlate human and mouse expression per ROI XY
+Correlate effect sizes such that column 1 is correlated with column 2 etc...
+```{r}
+zscored_human_homologous_XYgenes %>% as.matrix()
+zscored_mouse_homologous_XYgenes %>% as.matrix()
+corr_expression_XY <- rep(0, 56)
+for(i in 1:56) {
+  corr_expression_XY[i] <- cor(zscored_human_homologous_XYgenes[,i], zscored_mouse_homologous_XYgenes[,i])}
+summary(corr_expression_XY)
+
+label_XY <- colnames(zscored_human_homologous_XYgenes)
+df_corr_expression_XY <- cbind(label_XY, corr_expression_XY) %>% as_tibble()
+write.csv(df_corr_expression_XY, file="../input_data/gene_expression/other_analysis_fi.es/df_corr_expression_XY.csv")
+```
+
+### Correlate anatomical by transcriptional effects XY
+Calculate correlations
+```{r}
+expression_correlation_XY <- read.csv("../input_data/gene_expression/df_corr_expression_XY.csv")
+expression_correlation_XY <- expression_correlation_XY %>% mutate(label = str_replace(label, "left","Left"))
+expression_correlation_XY <- expression_correlation_XY %>% mutate(label = str_replace(label, "right","Right")) %>% as.data.frame()
+expression_XY <- expression_correlation_XY$corr_expression_XY 
+
+df_homologous_anatomy_transcription_XY <-merge(df_homologous_anatomical_betas, expression_correlation_XY, by="label") %>% as.data.frame()
+
+df_homologous_anatomy_transcription_XY <- cbind(df_homologous_anatomical_betas, expression_XY)
+pbcor(df_homologous_anatomy_transcription_XY$anat_dot_prod, df_homologous_anatomy_transcription_XY$expression_XY)
+```
+
+### Plot anatomy vs transcription XY
+```{r}
+anatomy_transcription_plot <- ggplot(df_homologous_anatomy_transcription_XY, aes(x=anat_dot_prod, y=expression_XY, 
+                                                              label=label)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) + 
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="none")+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+anatomy_transcription_plot
+```
+
+
+# Correlate anatomical by transcriptional effects in cortex vs non cortex
+Calculate correlations
+```{r}
+df_cortex <-df_homologous_anatomy_transcription_XY %>% filter(cort_vs_subcort == "Cortex")
+df_noncortex <-df_homologous_anatomy_transcription_XY %>% filter(cort_vs_subcort == "Not cortex")
+
+#Cortex
+pbcor(df_cortex$anat_dot_prod, df_cortex$expression_XY)
+#Non cortex
+pbcor(df_noncortex$anat_dot_prod, df_noncortex$expression_XY)
+
+## plot
+cort_subcort_plot <- ggplot(df_homologous_anatomy_transcription_XY, aes(x=anat_dot_prod, y=expression_XY, 
+                                                              label=label, group=cort_vs_subcort, col=cort_vs_subcort)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) +
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="bottom")+
+  scale_fill_manual(values=c("springgreen4", "mediumorchid4"))+ 
+  scale_color_manual(values = c("springgreen4", "mediumorchid4"))+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+cort_subcort_plot
+```
+
+
+
+# Sex hormone genes
+```{r}
+sex_hormone_genes <- read.csv("../input_data/gene_expression/other_analysis_files/sex_hormone_genes_short.csv")
+
+df_human_homologs_sexchromo_sexhormone <- dplyr::filter(df_human_homologs_filt_final_chromo, gene %in% sex_hormone_genes$Human)
+
+df_mouse_homologs_sexchromo_sexhormone <- dplyr::filter(df_mouse_homologs_filt_final_chromo, gene %in% sex_hormone_genes$Mouse) 
+```
+
+## Scale matrices
+```{r}
+human_homologs1 <- df_human_homologs_sexchromo_sexhormone[,2:57]
+new_order_h = sort(colnames(human_homologs1))
+human_homologs2 <- human_homologs1[, new_order_h]
+human_homologs <- sapply(human_homologs2, as.numeric)
+demo_human <- dplyr::select(df_human_homologs_sexchromo_sexhormone, "gene", "chromosome")
+
+zscored_human_homologous_sexgenes <- matrix(0, nrow = nrow(human_homologs), ncol = ncol(human_homologs))
+for(j in 1:ncol(human_homologs)){
+  mu <- mean(human_homologs[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(human_homologs[,j]) #And standard deviations
+  zscored_human_homologous_sexgenes[,j] <- (human_homologs[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscored_human_homologous_sexgenes)<-colnames(human_homologs)
+df_zscored_human_homologous_sexgenes <- cbind(demo_human, zscored_human_homologous_sexgenes) %>% as_tibble
+```
+
+
+## Scale matrices with sex hromones + XY chromosomes
+```{r}
+mouse_homologs1 <- df_mouse_homologs_sexchromo_sexhormone[,2:57]
+new_order = sort(colnames(mouse_homologs1))
+mouse_homologs2 <- mouse_homologs1[, new_order]
+mouse_homologs <- sapply(mouse_homologs2, as.numeric)
+demo_mouse <- dplyr::select(df_mouse_homologs_sexchromo_sexhormone, "gene", "chromosome")
+
+zscored_mouse_homologous_sexgenes <- matrix(0, nrow = nrow(mouse_homologs), ncol = ncol(mouse_homologs))
+for(j in 1:ncol(mouse_homologs)){
+  mu <- mean(mouse_homologs[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_homologs[,j]) #And standard deviations
+  zscored_mouse_homologous_sexgenes[,j] <- (mouse_homologs[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscored_mouse_homologous_sexgenes)<-colnames(mouse_homologs)
+df_zscored_mouse_homologous_sexgenes <- cbind(demo_mouse, zscored_mouse_homologous_sexgenes) %>% as_tibble
+```
+
+## Correlate human and mouse expression per ROI XY
+Correlate effect sizes such that column 1 is correlated with column 2 etc...
+```{r}
+zscored_human_homologous_sexgenes %>% as.matrix()
+zscored_mouse_homologous_sexgenes %>% as.matrix()
+corr_expression_hormone <- rep(0, 56)
+for(i in 1:56) {
+  corr_expression_hormone[i] <- cor(zscored_human_homologous_sexgenes[,i], zscored_mouse_homologous_sexgenes[,i])}
+summary(corr_expression_hormone)
+
+label_hormone <- colnames(zscored_human_homologous_sexgenes)
+df_corr_expression_hormone <- cbind(label_hormone, corr_expression_hormone) %>% as_tibble()
+write.csv(df_corr_expression_hormone, file="../input_data/gene_expression/other_analysis_files/df_corr_expression_hormone.csv")
+```
+
+### Correlate anatomical by transcriptional effects XY
+Calculate correlations
+```{r}
+expression_correlation_hormone <- read.csv("../input_data/gene_expression/other_analysis_files/df_corr_expression_hormone.csv")
+expression_correlation_hormone <-  dplyr::rename(expression_correlation_hormone,`label` = `label_hormone`)
+expression_correlation_hormone <- expression_correlation_hormone %>% mutate(label = str_replace(label, "left","Left"))
+expression_correlation_hormone <- expression_correlation_hormone %>% mutate(label = str_replace(label, "right","Right")) %>% as.data.frame()
+
+expression_hormone <- expression_correlation_hormone$corr_expression_hormone 
+
+df_homologous_anatomy_transcription_hormone <-merge(df_homologous_anatomical_betas, expression_correlation_hormone, by="label") %>% as.data.frame()
+
+df_homologous_anatomy_transcription_hormone <- cbind(df_homologous_anatomical_betas, expression_hormone)
+pbcor(df_homologous_anatomy_transcription_hormone$anat_dot_prod, df_homologous_anatomy_transcription_hormone$expression_hormone)
+```
+
+
+### Plot anatomy vs transcription XY
+```{r}
+anatomy_transcription_plot <- ggplot(df_homologous_anatomy_transcription_hormone, aes(x=anat_dot_prod, y=expression_hormone, 
+                                                              label=label)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) + 
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="none")+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+anatomy_transcription_plot
+```
+
+# Correlate anatomical by transcriptional effects in cortex vs non cortex
+Calculate correlations
+```{r}
+df_cortex <-df_homologous_anatomy_transcription_hormone %>% filter(cort_vs_subcort == "Cortex")
+df_noncortex <-df_homologous_anatomy_transcription_hormone %>% filter(cort_vs_subcort == "Not cortex")
+
+#Cortex
+pbcor(df_cortex$anat_dot_prod, df_cortex$expression_hormone)
+#Non cortex
+pbcor(df_noncortex$anat_dot_prod, df_noncortex$expression_hormone)
+
+## plot
+cort_subcort_plot <- ggplot(df_homologous_anatomy_transcription_hormone, aes(x=anat_dot_prod, y=expression_hormone, 
+                                                              label=label, group=cort_vs_subcort, col=cort_vs_subcort)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) +
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="bottom")+
+  scale_fill_manual(values=c("springgreen4", "mediumorchid4"))+ 
+  scale_color_manual(values = c("springgreen4", "mediumorchid4"))+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+cort_subcort_plot
+```
+
+
+# Just male sex hormone genes
+```{r}
+sex_hormone_genes_male <- read.csv("../input_data/gene_expression/other_analysis_files/sex_hormone_genes_male_short.csv")
+
+df_human_homologs_male_genes <- dplyr::filter(df_human_homologs_filt_final_chromo, gene %in% sex_hormone_genes_male$Human)
+
+df_mouse_homologs_male_genes <- dplyr::filter(df_mouse_homologs_filt_final_chromo, gene %in% sex_hormone_genes_male$Mouse) 
+```
+
+## Scale matrices
+```{r}
+human_homologs_malegenes <- df_human_homologs_male_genes[,2:57]
+new_order_h = sort(colnames(human_homologs_malegenes))
+human_homologs2 <- human_homologs_malegenes[, new_order_h]
+human_homologs <- sapply(human_homologs2, as.numeric)
+demo_human <- dplyr::select(df_human_homologs_male_genes, "gene", "chromosome")
+
+zscored_human_homologous_male_genes <- matrix(0, nrow = nrow(human_homologs), ncol = ncol(human_homologs))
+for(j in 1:ncol(human_homologs)){
+  mu <- mean(human_homologs[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(human_homologs[,j]) #And standard deviations
+  zscored_human_homologous_male_genes[,j] <- (human_homologs[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscored_human_homologous_male_genes)<-colnames(human_homologs)
+df_zscored_human_homologous_male_genes <- cbind(demo_human, zscored_human_homologous_male_genes) %>% as_tibble
+```
+
+
+## Scale matrices 
+```{r}
+mouse_homologs1 <- df_mouse_homologs_male_genes[,2:57]
+new_order = sort(colnames(mouse_homologs1))
+mouse_homologs2 <- mouse_homologs1[, new_order]
+mouse_homologs <- sapply(mouse_homologs2, as.numeric)
+demo_mouse <- dplyr::select(df_mouse_homologs_male_genes, "gene", "chromosome")
+
+zscored_mouse_homologous_male_genes <- matrix(0, nrow = nrow(mouse_homologs), ncol = ncol(mouse_homologs))
+for(j in 1:ncol(mouse_homologs)){
+  mu <- mean(mouse_homologs[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_homologs[,j]) #And standard deviations
+  zscored_mouse_homologous_male_genes[,j] <- (mouse_homologs[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscored_mouse_homologous_male_genes)<-colnames(mouse_homologs)
+df_zscored_mouse_homologous_male_genes <- cbind(demo_mouse, zscored_mouse_homologous_male_genes) %>% as_tibble
+```
+
+## Correlate human and mouse expression per ROI 
+Correlate effect sizes such that column 1 is correlated with column 2 etc...
+```{r}
+zscored_human_homologous_sexgenes %>% as.matrix()
+zscored_mouse_homologous_sexgenes %>% as.matrix()
+corr_expression_male_genes <- rep(0, 56)
+for(i in 1:56) {
+  corr_expression_male_genes[i] <- cor(zscored_human_homologous_male_genes[,i], zscored_mouse_homologous_male_genes[,i])}
+summary(corr_expression_male_genes)
+
+label_male_genes <- colnames(zscored_human_homologous_male_genes)
+df_corr_expression_male_genes <- cbind(label_male_genes, corr_expression_male_genes) %>% as_tibble()
+write.csv(df_corr_expression_male_genes, file="../input_data/gene_expression/other_analysis_files/df_corr_expression_male_hormone_genes.csv")
+```
+
+
+
+### Correlate anatomical by transcriptional effects
+Calculate correlations
+```{r}
+expression_correlation_male_genes <- read.csv("../input_data/gene_expression/other_analysis_files/df_corr_expression_male_hormone_genes.csv")
+expression_correlation_male_genes <-  dplyr::rename(expression_correlation_male_genes,`label` = `label_male_genes`)
+expression_correlation_male_genes <- expression_correlation_male_genes %>% mutate(label = str_replace(label, "left","Left"))
+expression_correlation_male_genes <- expression_correlation_male_genes %>% mutate(label = str_replace(label, "right","Right")) %>% as.data.frame()
+
+expression_male_genes <- expression_correlation_male_genes$corr_expression_male_genes 
+
+df_homologous_anatomy_transcription_male_genes <-merge(df_homologous_anatomical_betas, expression_correlation_male_genes, by="label") %>% as.data.frame()
+
+df_homologous_anatomy_transcription_male_genes <- cbind(df_homologous_anatomical_betas, expression_male_genes)
+pbcor(df_homologous_anatomy_transcription_male_genes$anat_dot_prod, df_homologous_anatomy_transcription_male_genes$expression_male_genes)
+```
+
+
+### Plot anatomy vs transcription 
+```{r}
+anatomy_transcription_plot_males <- ggplot(df_homologous_anatomy_transcription_male_genes, aes(x=anat_dot_prod, y=expression_male_genes, 
+                                                              label=label)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 15)+
+  geom_smooth(method = MASS::rlm) + 
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="none")+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+anatomy_transcription_plot_males
+```
+
+### Correlate anatomical by transcriptional effects in cortex vs non cortex
+Calculate correlations
+```{r}
+df_cortex <-df_homologous_anatomy_transcription_male_genes %>% filter(cort_vs_subcort == "Cortex")
+df_noncortex <-df_homologous_anatomy_transcription_male_genes %>% filter(cort_vs_subcort == "Not cortex")
+
+#Cortex
+pbcor(df_cortex$anat_dot_prod, df_cortex$expression_male_genes)
+#Non cortex
+pbcor(df_noncortex$anat_dot_prod, df_noncortex$expression_male_genes)
+
+## plot
+cort_subcort_plot <- ggplot(df_homologous_anatomy_transcription_male_genes, aes(x=anat_dot_prod, y=expression_male_genes, 
+                                                              label=label, group=cort_vs_subcort, col=cort_vs_subcort)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) +
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="bottom")+
+  scale_fill_manual(values=c("springgreen4", "mediumorchid4"))+ 
+  scale_color_manual(values = c("springgreen4", "mediumorchid4"))+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+cort_subcort_plot
+```
+
+# Female hormones
+```{r}
+sex_hormone_genes_female <- read.csv("../input_data/gene_expression/other_analysis_files/sex_hormone_genes_female_short.csv")
+df_human_homologs_female_genes <- dplyr::filter(df_human_homologs_filt_final_chromo, gene %in% sex_hormone_genes_female$Human)
+df_mouse_homologs_female_genes <- dplyr::filter(df_mouse_homologs_filt_final_chromo, gene %in% sex_hormone_genes_female$Mouse) 
+```
+
+## Scale matrices
+```{r}
+human_homologs_femalegenes <- df_human_homologs_female_genes[,2:57]
+new_order_h = sort(colnames(human_homologs_femalegenes))
+human_homologs2 <- human_homologs_femalegenes[, new_order_h]
+human_homologs <- sapply(human_homologs2, as.numeric)
+demo_human <- dplyr::select(df_human_homologs_female_genes, "gene", "chromosome")
+
+zscored_human_homologous_female_genes <- matrix(0, nrow = nrow(human_homologs), ncol = ncol(human_homologs))
+for(j in 1:ncol(human_homologs)){
+  mu <- mean(human_homologs[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(human_homologs[,j]) #And standard deviations
+  zscored_human_homologous_female_genes[,j] <- (human_homologs[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscored_human_homologous_female_genes)<-colnames(human_homologs)
+df_zscored_human_homologous_female_genes <- cbind(demo_human, zscored_human_homologous_female_genes) %>% as_tibble
+```
+
+
+## Scale matrices 
+```{r}
+mouse_homologs1 <- df_mouse_homologs_female_genes[,2:57]
+new_order = sort(colnames(mouse_homologs1))
+mouse_homologs2 <- mouse_homologs1[, new_order]
+mouse_homologs <- sapply(mouse_homologs2, as.numeric)
+demo_mouse <- dplyr::select(df_mouse_homologs_female_genes, "gene", "chromosome")
+
+zscored_mouse_homologous_female_genes <- matrix(0, nrow = nrow(mouse_homologs), ncol = ncol(mouse_homologs))
+for(j in 1:ncol(mouse_homologs)){
+  mu <- mean(mouse_homologs[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_homologs[,j]) #And standard deviations
+  zscored_mouse_homologous_female_genes[,j] <- (mouse_homologs[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscored_mouse_homologous_female_genes)<-colnames(mouse_homologs)
+df_zscored_mouse_homologous_female_genes <- cbind(demo_mouse, zscored_mouse_homologous_female_genes) %>% as_tibble
+```
+
+## Correlate human and mouse expression per ROI 
+Correlate effect sizes such that column 1 is correlated with column 2 etc...
+```{r}
+corr_expression_female_genes <- rep(0, 56)
+for(i in 1:56) {
+  corr_expression_female_genes[i] <- cor(zscored_human_homologous_female_genes[,i], zscored_mouse_homologous_female_genes[,i])}
+summary(corr_expression_female_genes)
+
+label_female_genes <- colnames(zscored_human_homologous_female_genes)
+df_corr_expression_female_genes <- cbind(label_female_genes, corr_expression_female_genes) %>% as_tibble()
+write.csv(df_corr_expression_female_genes, file="../input_data/gene_expression/other_analysis_files/df_corr_expression_female_hormone_genes.csv")
+```
+
+### Correlate anatomical by transcriptional effects 
+Calculate correlations
+```{r}
+expression_correlation_female_genes <- read.csv("../input_data/gene_expression/other_analysis_files/df_corr_expression_female_hormone_genes.csv")
+expression_correlation_female_genes <-  dplyr::rename(expression_correlation_female_genes,`label` = `label_female_genes`)
+expression_correlation_female_genes <- expression_correlation_female_genes %>% mutate(label = str_replace(label, "left","Left"))
+expression_correlation_female_genes <- expression_correlation_female_genes %>% mutate(label = str_replace(label, "right","Right")) %>% as.data.frame()
+
+expression_female_genes <- expression_correlation_female_genes$corr_expression_female_genes 
+
+df_homologous_anatomy_transcription_female_genes <-merge(df_homologous_anatomical_betas, expression_correlation_female_genes, by="label") %>% as.data.frame()
+
+df_homologous_anatomy_transcription_female_genes <- cbind(df_homologous_anatomical_betas, expression_female_genes)
+summary(cor(df_homologous_anatomy_transcription_female_genes$anat_dot_prod, df_homologous_anatomy_transcription_female_genes$expression_female_genes))
+cor.test(df_homologous_anatomy_transcription_female_genes$anat_dot_prod, df_homologous_anatomy_transcription_female_genes$expression_female_genes)
+pbcor(df_homologous_anatomy_transcription_female_genes$anat_dot_prod, df_homologous_anatomy_transcription_female_genes$expression_female_genes)
+```
+
+### Plot anatomy vs transcription
+```{r}
+anatomy_transcription_plot_females <- ggplot(df_homologous_anatomy_transcription_female_genes, aes(x=anat_dot_prod, y=expression_female_genes, 
+                                                              label=label)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) + 
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="none")+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+anatomy_transcription_plot_females
+```
+
+# Correlate anatomical by transcriptional effects in cortex vs non cortex
+Calculate correlations
+```{r}
+df_cortex <-df_homologous_anatomy_transcription_female_genes %>% filter(cort_vs_subcort == "Cortex")
+df_noncortex <-df_homologous_anatomy_transcription_female_genes %>% filter(cort_vs_subcort == "Not cortex")
+
+#Cortex
+pbcor(df_cortex$anat_dot_prod, df_cortex$expression_female_genes)
+#Non cortex
+pbcor(df_noncortex$anat_dot_prod, df_noncortex$expression_female_genes)
+
+## plot
+cort_subcort_plot <- ggplot(df_homologous_anatomy_transcription_female_genes, aes(x=anat_dot_prod, y=expression_female_genes, 
+                                                              label=label, group=cort_vs_subcort, col=cort_vs_subcort)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 20)+
+  geom_smooth(method = MASS::rlm) +
+  theme_classic()+xlab("Anatomical similarity")+ ylab("Transcriptional similarity")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="bottom")+
+  scale_fill_manual(values=c("springgreen4", "mediumorchid4"))+ 
+  scale_color_manual(values = c("springgreen4", "mediumorchid4"))+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+cort_subcort_plot
+```

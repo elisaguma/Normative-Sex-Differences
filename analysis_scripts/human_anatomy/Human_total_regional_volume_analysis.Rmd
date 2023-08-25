@@ -1,0 +1,1000 @@
+---
+title: "HCP-human-sex-differences"
+author: "Elisa Guma"
+date: "9/6/2022"
+output: html_document
+---
+
+# Description
+
+In this script I aim to compute maps of sex differences in the brain using Freesurfer 
+outputs from the HCP data for the cortex (Glasser), subcortex, including amygdala 
+subnuclei and hippocampus subfields, and hypothalamus and adjacent nuclei.
+
+I characterize differences sex differences in total and regional brain volume (both
+with and without total brain volume covariation). In addition to mean differences, I 
+also investigate sex differences in anatomical variance. 
+
+# Load in necessary libraries
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(RMINC)
+library(magrittr)
+library(broom)
+library(ggplot2)
+library(ggseg)
+library(ggsegGlasser)
+library(cowplot)
+library(readr)
+library(PupillometryR)
+library(reshape2)
+library(car)
+```
+
+## Import data
+```{r}
+df_HCP_volumes <- readRDS("../input_data/human_anatomy/df_HCP_volumes_clean.RDS")
+```
+
+### correlate euler values
+```{r}
+summary(cor(df_HCP_volumes$lh_euler, df_HCP_volumes$rh_euler))
+
+#plot with only the left ROI labels
+ggplot(df_HCP_volumes, aes(x=lh_euler, y=rh_euler)) +
+  geom_point(size=3)+ 
+  geom_smooth(method=lm)  + 
+  theme_classic()+xlab("LH Euler")+ ylab("RH Euler")+
+  labs(title = "Euler corr across hemispheres")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 14, face="bold"),
+        legend.position="none")+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+```
+## remove the subject with low euler number
+
+```{r}
+df_HCP_volumes_qc <- subset(df_HCP_volumes, df_HCP_volumes$euler > -200 & df_HCP_volumes$QC_include == 1)
+```
+
+### Correlate euler values
+```{r}
+summary(cor(df_HCP_volumes_qc$lh_euler, df_HCP_volumes_qc$rh_euler))
+
+#plot with only the left ROI labels
+ggplot(df_HCP_volumes_qc, aes(x=lh_euler, y=rh_euler, col=Sex)) +
+  geom_point(size=3)+ 
+  geom_smooth(method=lm)  + 
+  theme_classic()+xlab("LH Euler")+ ylab("RH Euler")+
+  labs(title = "Euler corr across hemispheres")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 14, face="bold"),
+        legend.position="none")+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_abline()
+```
+
+# Demographics
+```{r}
+table(df_HCP_volumes_qc$Sex, df_HCP_volumes_qc$Age_in_Yrs)
+
+demographics_table <- df_HCP_volumes_qc %>% 
+  dplyr::group_by(Sex) %>% 
+  dplyr::summarize(
+    mean_age = mean(Age_in_Yrs),
+    sd_age = sd(Age_in_Yrs),
+    range_age=range(Age_in_Yrs),
+    mean_Edu = mean(SSAGA_Educ, na.rm = T),
+    sd_Edu = sd(SSAGA_Educ, na.rm = T),
+    range_Edu=range(SSAGA_Educ, na.rm = T),
+    mean_euler = mean(euler, na.rm = T),
+    sd_euler = sd(euler, na.rm = T),
+    range_euler=range(euler, na.rm = T),
+    n=n())
+demographics_table
+
+table(df_HCP_volumes_qc$Sex, df_HCP_volumes_qc$Race)
+table(df_HCP_volumes_qc$Sex, df_HCP_volumes_qc$Ethnicity)
+table(df_HCP_volumes_qc$Sex, df_HCP_volumes_qc$ZygositySR)
+```
+
+## Analysis
+```{r}
+summary(aov(Age_in_Yrs ~ Sex, df_HCP_volumes_qc))
+summary(aov(BMI ~ Sex, df_HCP_volumes_qc))
+summary(aov(euler ~ Sex, df_HCP_volumes_qc))
+summary(aov(SSAGA_Educ ~ Sex, df_HCP_volumes_qc))
+chisq.test(df_HCP_volumes_qc$Sex, df_HCP_volumes_qc$ZygositySR)
+```
+
+## Calculate percent difference in volume for total tissue volume
+```{r}
+mean_difference <- df_HCP_volumes_qc %>% 
+  dplyr::group_by(Sex) %>% 
+  dplyr::summarize(
+    mean_ttv = mean(BrainSegVolNotVent.y),
+    sd_ttv=sd(BrainSegVolNotVent.y),
+    n = n()
+  )
+mean_difference
+male_mean <- 1258933
+female_mean <-1101465
+pct_diff = ((male_mean - female_mean)/((male_mean + female_mean)/2))*100
+pct_diff
+```
+
+# HUMAN Z-SCORE CALCULATION
+
+## Calculate z-scores
+```{r}
+human_vols <- df_HCP_volumes_qc[,31:ncol(df_HCP_volumes_qc)] #Then subset the volumes for the control observations #vols from 54:461
+HCP_demo <- df_HCP_volumes_qc[,1:30]
+zscores_HCP <- matrix(0, nrow = nrow(human_vols), ncol = ncol(human_vols))
+for(j in 1:ncol(human_vols)){
+  mu <- mean(human_vols[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(human_vols[,j]) #And standard deviations
+  zscores_HCP[,j] <- (human_vols[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+### Assign column names and "rebind" demographics data
+colnames(zscores_HCP)<-colnames(human_vols)
+df_zscores_HCP <- HCP_demo %>% cbind(zscores_HCP) 
+#write.csv(df_zscores_HCP, file="/Users/gumae2/Documents/Cross_species_sex_differences/human_data/HCP_volumes_zscored.csv")
+```
+
+# LINEAR MODEL
+## Look at total tissue volume
+
+### Total tissue volume
+```{r}
+linearmodel <- lm(BrainSegVolNotVent.y ~ Sex + AGE_cent + euler, data=df_zscores_HCP)
+summary(linearmodel)
+```
+# Variance in total tissue volume
+```{r}
+result = leveneTest(BrainSegVolNotVent.y ~ Sex, df_zscores_HCP)
+print(result)
+# pdf(file = "/Users/gumae2/Documents/Cross_species_sex_differences/Figures/total_tissue_volume/density_bysex_TTV.pdf",
+#      width = 5,
+#      height = 4)
+ggplot(df_zscores_HCP, aes(x=BrainSegVolNotVent.y, fill=Sex, color=Sex)) +
+    geom_density(alpha=.4, adjust = 0.5) +
+    theme_classic()+ xlab("Total Tissue Volume")+ylab("Density")+
+    scale_fill_manual(values=c("F"="deepskyblue","M"="goldenrod1"))+
+    scale_colour_manual(values=c("F"="deepskyblue","M"="goldenrod1"))+
+   theme(text = element_text(size = 14))+
+    geom_vline(xintercept=c(0))
+
+summary_table <- df_zscores_HCP %>% 
+  group_by(Sex) %>%
+  dplyr::summarize(
+    mean_ttv = mean(`BrainSegVolNotVent.y`),
+    median_ttv = median(`BrainSegVolNotVent.y`),
+    sd_ttv=sd(`BrainSegVolNotVent.y`),
+    range_ttv=range(`BrainSegVolNotVent.y`),
+    n = n()
+  )
+summary_table
+```
+
+### Total white matter volume
+```{r}
+df_zscores_HCP$total_white_matter <- df_zscores_HCP$CerebralWhiteMatterVol+df_zscores_HCP$Left.Cerebellum.White.Matter +df_zscores_HCP$Right.Cerebellum.White.Matter
+
+linearmodel <- lm(total_white_matter ~ Sex + AGE_cent + euler, data=df_zscores_HCP)
+summary(linearmodel)
+```
+
+
+### Total grey matter volume
+```{r}
+linearmodel <- lm(TotalGrayVol ~ Sex + AGE_cent + euler, data=df_zscores_HCP)
+summary(linearmodel)
+```
+
+## Calculate model_inpus
+the mean age, TTV, and euler number for the residual plots to plot adjusted volumes
+```{r}
+model_inputs <- df_zscores_HCP %>% 
+  summarize(
+    AGE_cent = mean(AGE_cent),
+    BrainSegVolNotVent.y = mean(BrainSegVolNotVent.y),
+    euler = mean(euler))
+model_inputs %>% as.data.frame()
+model_inputs[2,] <- model_inputs[1,]
+model_inputs$Sex = c("F", "M")
+```
+
+## Plot RAW total white matter volume
+```{r}
+## zscore total tissue volume
+mu_wm<- mean(df_HCP_volumes_qc$CerebralWhiteMatterVol)
+sigma_wm <- sd(df_HCP_volumes_qc$CerebralWhiteMatterVol)
+df_HCP_volumes_qc$zscored_total_wm_volume <- (df_HCP_volumes_qc$CerebralWhiteMatterVol - mu_wm)/sigma_wm 
+
+ggplot(df_HCP_volumes_qc, aes(x = Sex, y = zscored_total_wm_volume, group=Sex, colour=Sex, fill=Sex)) + 
+geom_flat_violin(position = position_nudge(x = .1, y = 0), 
+    alpha =.4,adjust =0.8)+
+  geom_boxplot(width = .1, outlier.shape = NA, alpha = .5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(side = "l",range_scale = .4,  alpha = .3) +
+  #Adjust theme
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  theme_classic()+
+  labs(
+    y="Total White Matter Volume (Z-scored)",
+    fill="Sex")+  theme(text = element_text(size = 14))+ylim(-4, 4)+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(Total ~ White ~ Matter ~ Volume~ (mm^3)), ~ (. * sigma_wm) + mu_wm), 
+    name="Total White Matter Volume (Z-scored)", limits=c(-4,4)) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+## White matter volume adjusted linear model 
+```{r}
+linearmodel <- lm(CerebralWhiteMatterVol ~ Sex + AGE_cent + euler + BrainSegVolNotVent.y, data=df_zscores_HCP)
+summary(linearmodel)
+## estimate the residulized ROI volume for females (1) and males (2)
+wmv_estimates <- predict.lm(linearmodel,model_inputs)
+
+residualized_wmv_vol <- residuals(lm(CerebralWhiteMatterVol~ AGE_cent + euler + BrainSegVolNotVent.y, data=df_zscores_HCP))
+resid_wmv<- cbind(df_zscores_HCP,residualized_wmv_vol)
+summary(lm(residualized_wmv_vol ~ Sex, data=resid_wmv))
+
+resid_wmv_females  <- resid_wmv %>% filter(Sex %in% c("F"))
+resid_wmv_females$adjusted_wmv_resid <- resid_wmv_females$residualized_wmv_vol + wmv_estimates[1]
+
+resid_wmv_males  <- resid_wmv %>% filter(Sex %in% c("M"))
+resid_wmv_males$adjusted_wmv_resid <- resid_wmv_males$residualized_wmv_vol + wmv_estimates[2]
+
+resid_wmv_adjusted <- rbind(resid_wmv_females, resid_wmv_males)
+```
+
+### Plot adjusted residuals White matter volume
+```{r}
+mu_wmv<- mean(df_HCP_volumes_qc$CerebralWhiteMatterVol)
+sigma_wmv <- sd(df_HCP_volumes_qc$CerebralWhiteMatterVol)
+ggplot(resid_wmv_adjusted, aes(x = Sex, y = adjusted_wmv_resid, group=Sex, colour=Sex, fill=Sex)) + 
+geom_flat_violin(
+    position = position_nudge(x = .1, y = 0), 
+    alpha =.4,adjust =0.8)+
+  geom_boxplot(
+    width = .1, 
+    outlier.shape = NA,
+     alpha = .5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(side = "l", range_scale = .4, alpha = .3) +
+  #Adjust theme
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  theme_classic()+
+  labs(
+    y="Total White Matter Volume (residualized)",
+    fill="Sex")+  theme(text = element_text(size = 14))+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(Total ~White ~Matter ~ Volume~ (mm^3)), ~ (. * sigma_wmv) + mu_wmv), 
+    name="Total White Matter Volume (residualized)") +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+
+
+
+## Plot RAW total Gray matter volume
+```{r}
+## zscore total tissue volume
+mu_gm<- mean(df_HCP_volumes_qc$TotalGrayVol)
+sigma_gm <- sd(df_HCP_volumes_qc$TotalGrayVol)
+df_HCP_volumes_qc$zscored_total_gm_volume <- (df_HCP_volumes_qc$TotalGrayVol - mu_gm)/sigma_gm 
+
+ggplot(df_HCP_volumes_qc, aes(x = Sex, y = zscored_total_gm_volume, group=Sex, colour=Sex, fill=Sex)) + 
+geom_flat_violin(position = position_nudge(x = .1, y = 0), 
+    alpha =.4,adjust =0.8)+
+  geom_boxplot(width = .1, outlier.shape = NA, alpha = .5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(side = "l",range_scale = .4,  alpha = .3) +
+  #Adjust theme
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  theme_classic()+
+  labs(
+    y="Total Grey Matter Volume (Z-scored)",
+    fill="Sex")+  theme(text = element_text(size = 14))+ylim(-4, 4)+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(Total ~ Grey ~ Matter ~ Volume~ (mm^3)), ~ (. * sigma_gm) + mu_gm), 
+    name="Total Grey Matter Volume (Z-scored)", limits=c(-4,4)) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+## Grey matter volume adjusted linear model 
+```{r}
+linearmodel <- lm(TotalGrayVol ~ Sex + AGE_cent + euler + BrainSegVolNotVent.y, data=df_zscores_HCP)
+summary(linearmodel)
+## estimate the residulized ROI volume for females (1) and males (2)
+gmv_estimates <- predict.lm(linearmodel,model_inputs)
+
+residualized_gmv_vol <- residuals(lm(TotalGrayVol~ AGE_cent + euler + BrainSegVolNotVent.y, data=df_zscores_HCP))
+resid_gmv<- cbind(df_zscores_HCP,residualized_gmv_vol)
+summary(lm(residualized_gmv_vol ~ Sex, data=resid_gmv))
+
+resid_gmv_females  <- resid_gmv %>% filter(Sex %in% c("F"))
+resid_gmv_females$adjusted_gmv_resid <- resid_gmv_females$residualized_gmv_vol + gmv_estimates[1]
+
+resid_gmv_males  <- resid_gmv %>% filter(Sex %in% c("M"))
+resid_gmv_males$adjusted_gmv_resid <- resid_gmv_males$residualized_gmv_vol + gmv_estimates[2]
+
+resid_gmv_adjusted <- rbind(resid_gmv_females, resid_gmv_males)
+```
+
+### Plot adjusted residuals grey matter volume
+```{r}
+mu_gmv<- mean(df_HCP_volumes_qc$TotalGrayVol)
+sigma_gmv <- sd(df_HCP_volumes_qc$TotalGrayVol)
+ggplot(resid_gmv_adjusted, aes(x = Sex, y = adjusted_gmv_resid, group=Sex, colour=Sex, fill=Sex)) + 
+geom_flat_violin(
+    position = position_nudge(x = .1, y = 0), 
+    alpha =.4,adjust =0.8)+
+  geom_boxplot(
+    width = .1, 
+    outlier.shape = NA,
+     alpha = .5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(side = "l", range_scale = .4, alpha = .3) +
+  #Adjust theme
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  theme_classic()+
+  labs(
+    y="Total Grey Matter Volume (residualized)",
+    fill="Sex")+  theme(text = element_text(size = 14))+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(Total ~Grey ~Matter ~ Volume~ (mm^3)), ~ (. * sigma_gmv) + mu_gmv), 
+    name="Total Grey Matter Volume (residualized)") +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+
+
+# RUN ACROSS ALL REGIONS
+
+### Remove white matter and ventricle volume from data fram
+```{r}
+df_zscores_HCP_greymatter <-dplyr::select(df_zscores_HCP,
+                                          -starts_with("CC_"),-"total_white_matter",
+                                          -ends_with("Ventricle"), -ends_with("Inf.Lat.Vent"),
+                                          -ends_with("CortexVol"), -ends_with("WhiteMatterVol"), 
+                                          -ends_with("SubCortGrayVol"), -"BrainSegVol", -"Left.Hippocampus", -"Right.Hippocampus",
+                                          -"Left.Amygdala", -"Right.Amygdala",-ends_with("Cerebellum.White.Matter"),-"CSF", 
+                                          -"eTIV", -"TotalGrayVol", -ends_with("VentralDC"), -ends_with("FX"), -ends_with("ITP"), 
+                                          -ends_with("AC"),  -ends_with("MT"), -ends_with("AC"))
+```
+
+# Run across all ROIs with TBV as a covariate
+
+## Full ROI subset
+```{r}
+Sex_diffs_allROI_wTBV_zscore= anatLm(~ Sex + AGE_cent + BrainSegVolNotVent.y, df_zscores_HCP_greymatter,df_zscores_HCP_greymatter[,31:ncol(df_zscores_HCP_greymatter)])
+FDR_Sex_diffs_allROI_wTBV_zscore <- anatFDR(Sex_diffs_allROI_wTBV_zscore)
+FDR_Sex_diffs_allROI_wTBV_zscore
+```
+
+### calculate t-values
+```{r}
+dof <- 1006
+tvals <- abs(Sex_diffs_allROI_wTBV_zscore[, 'tvalue-SexM'])
+pvals_sex<- 2*pt(q = tvals, df = dof, lower.tail = FALSE) %>% as_tibble()
+
+tvals <- abs(Sex_diffs_allROI_wTBV_zscore[, 'tvalue-AGE_cent'])
+pvalsAGE_cent <- 2*pt(q = tvals, df = dof, lower.tail = FALSE) %>% as_tibble()
+
+tvals <- abs(Sex_diffs_allROI_wTBV_zscore[, 'tvalue-BrainSegVolNotVent.y'])
+pvalsBrainSegVolNotVent.y <- 2*pt(q = tvals, df = dof, lower.tail = FALSE) %>% as_tibble()
+
+# aggregate model outputs 
+model_outputs_Sex_diffs_wTBV <- Sex_diffs_allROI_wTBV_zscore %>% as.data.frame()
+model_outputs_Sex_diffs_wTBV$label <- rownames(Sex_diffs_allROI_wTBV_zscore) 
+model_outputs_Sex_diffs_wTBV1 <- cbind(model_outputs_Sex_diffs_wTBV, pvals_sex,pvalsAGE_cent,pvalsBrainSegVolNotVent.y,FDR_Sex_diffs_allROI_wTBV_zscore)
+colnames(model_outputs_Sex_diffs_wTBV1) <- c("F-statistic","R-squared","beta-(Intercept)","beta-SexM", "beta-AGE_cent","beta-BrainSegVolNotVent.y", "tvalue-(Intercept)","tvalue-SexM", "tvalue-AGE_cent", "tvalue-BrainSegVolNotVent.y","logLik","label","pvals-SexM","pvalsAGE_cent","pvalsBrainSegVolNotVent.y", "qvalue-F-statistic", "qvalue-(Intercept)", "qvalue-SexM", "qvalue-AGE_cent","qvalue-BrainSegVolNotVent.y")
+```
+
+#Residulaize volumes & look at variance with TTV correction
+```{r}
+## Calculate residualized volumes for males
+df_just_males <-df_zscores_HCP_greymatter %>% filter(Sex == "M")
+human_vols_males <- df_just_males[,31:ncol(df_just_males)] #Then subset the volumes for the control observations #vols from 54:461
+HCP_demo_males <- df_just_males[,1:30]
+
+residuals_HCP_males <- matrix(0, nrow = nrow(human_vols_males), ncol = ncol(human_vols_males))
+for(j in 1:ncol(human_vols_males)){
+  residuals_HCP_males[,j] <- residuals(lm(human_vols_males[,j] ~ AGE_cent + euler + BrainSegVolNotVent.y, data=df_just_males))
+}
+### Assign column names and "rebind" demographics data
+colnames(residuals_HCP_males)<-colnames(human_vols_males)
+df_residuals_HCP_males <- HCP_demo_males %>% cbind(residuals_HCP_males)
+
+## Calculate residualized volumes for females
+df_just_females <-df_zscores_HCP_greymatter %>% filter(Sex == "F")
+human_vols_females <- df_just_females[,31:ncol(df_just_females)] #Then subset the volumes for the control observations #vols from 54:461
+HCP_demo_females <- df_just_females[,1:30]
+
+residuals_HCP_females <- matrix(0, nrow = nrow(human_vols_females), ncol = ncol(human_vols_females))
+for(j in 1:ncol(human_vols_females)){
+  residuals_HCP_females[,j] <- residuals(lm(human_vols_females[,j] ~ AGE_cent + euler + BrainSegVolNotVent.y, data=df_just_females))
+}
+
+### Assign column names and "rebind" demographics data
+colnames(residuals_HCP_females)<-colnames(human_vols_females)
+df_residuals_HCP_females <- HCP_demo_females %>% cbind(residuals_HCP_females)
+
+df_residuals_HCP <- rbind(df_residuals_HCP_males, df_residuals_HCP_females)
+residuals_HCP <- df_residuals_HCP[,31:ncol(df_residuals_HCP)]
+
+## Calculate variance
+variance_males <- matrix(0, nrow = 1, ncol = ncol(residuals_HCP_males))
+for(j in 1:ncol(residuals_HCP_males)){
+  variance_males[,j] <- var(residuals_HCP_males[,j]) #Then you can compute the ROI-wise averages
+}
+colnames(variance_males)<-colnames(residuals_HCP_males)
+
+variance_females <- matrix(0, nrow = 1, ncol = ncol(residuals_HCP_females))
+for(j in 1:ncol(residuals_HCP_females)){
+  variance_females[,j] <- var(residuals_HCP_females[,j]) #Then you can compute the ROI-wise averages
+}
+colnames(variance_females)<-colnames(residuals_HCP_females)
+
+variance <- t(rbind(variance_males, variance_females)) %>% as.data.frame()
+colnames(variance) <- c("male_variance", "female_variance")
+
+variance_1 <- variance %>% mutate(Sexbias = if_else(male_variance > female_variance, "Male-bias", "Female-bias"))
+variance_1$label <- rownames(variance_1)
+
+## Perform Levene's test across all regions
+Levene_test_pvalue <- matrix(NA, nrow = ncol(residuals_HCP), ncol= 1)
+Levene_test_fvalue <- matrix(NA, nrow = ncol(residuals_HCP), ncol= 1)
+
+for(i in 1:ncol(residuals_HCP)){
+    result <- leveneTest(residuals_HCP[,i] ~ Sex, df_residuals_HCP)
+#store outputs of interest
+Levene_test_pvalue[i,] <- result[1,3] # extract Pr(>F)
+Levene_test_fvalue[i,] <- result[1,2] # extract F value
+}
+
+variance_analysis_humans <- cbind(Levene_test_fvalue, Levene_test_pvalue) %>% as.data.frame()
+variance_analysis_humans$label <- colnames(residuals_HCP)
+colnames(variance_analysis_humans) <- c("fvalue","pvalue","label")
+variance_analysis_humans$Hochberg <- p.adjust(variance_analysis_humans$pvalue,method = "hochberg")
+variance_analysis_humans_1 <- left_join(variance_analysis_humans, variance_1, by="label")
+#write.csv(variance_analysis_humans_1, file="/Users/gumae2/Documents/Cross_species_sex_differences/Tables/Variance_analysis_humans.csv")
+```
+
+### Convert labels for plotting
+```{r}
+variance_analysis_humans$label <- gsub("_ROI_volume", "", variance_analysis_humans$label)
+variance_analysis_humans$label <- gsub("Right.", "Right-", variance_analysis_humans$label)
+variance_analysis_humans$label <- gsub("Left.", "Left-", variance_analysis_humans$label)
+variance_analysis_humans$label <- gsub("Right-Cerebellum.Cortex", "right-cerebellum",  variance_analysis_humans$label)
+variance_analysis_humans$label <- gsub("Left-Cerebellum.Cortex", "left-cerebellum",  variance_analysis_humans$label)
+variance_analysis_humans$label <- gsub("Whole_brainstem", "brain-stem", variance_analysis_humans$label)
+variance_analysis_humans$label <- gsub("Whole_hippocampus", "Hippocampus", variance_analysis_humans$label)
+variance_analysis_humans$label <- gsub("Whole_amygdala", "Amygdala", variance_analysis_humans$label)
+variance_analysis_humans$label <- gsub("Brain.stem", "brain-stem", variance_analysis_humans$label)
+
+## Threshold at 5% FDR
+sig_pos_levene <- variance_analysis_humans$pvalue < 0.049
+significant_pos_levene <-variance_analysis_humans[sig_pos_levene,]
+sig_neg_levene <- variance_analysis_humans$pvalue > -0.049
+significant_neg_levene <-variance_analysis_humans[sig_neg_levene,]
+sig_levenes <- variance_analysis_humans[sig_pos_levene | sig_neg_levene, ]
+```
+
+### Plot Variance on Brain
+```{r}
+#Cortical
+##p-value
+ggplot(significant_pos_levene) +   
+  geom_brain(atlas = glasser, 
+             colour="white", position = position_brain(hemi +side ~ .),
+             mapping=aes(fill=pvalue)) + theme_void() +
+   theme(legend.text = element_text(size = 10))+
+    labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+##q-value
+ggplot(significant_pos_levene) +   
+  geom_brain(atlas = glasser, 
+             colour="white", position = position_brain(hemi +side ~ .),
+             mapping=aes(fill=Hochberg)) + theme_void() +
+   theme(legend.text = element_text(size = 10))+
+    labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+#Axial
+##p-value
+ggplot(significant_pos_levene) +   
+  geom_brain(atlas = aseg, side="coronal",
+               mapping=aes(fill=pvalue), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+##q-value
+ggplot(significant_pos_levene) +   
+  geom_brain(atlas = aseg, side="coronal",
+               mapping=aes(fill=Hochberg), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+
+
+#Sagittal
+##p-value
+ggplot(significant_pos_levene) +   
+  geom_brain(atlas = aseg, side="sagittal",
+               mapping=aes(fill=pvalue), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+   labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+```
+
+#Residulaize volumes & look at variance without TTV correction
+```{r}
+## Calculate residualized volumes for males
+df_just_males_noTTV <-df_zscores_HCP_greymatter %>% filter(Sex == "M")
+human_vols_males_noTTV <- df_just_males_noTTV[,31:ncol(df_just_males_noTTV)] #Then subset the volumes for the control observations #vols from 54:461
+HCP_demo_males_noTTV <- df_just_males_noTTV[,1:30]
+
+residuals_HCP_males_noTTV <- matrix(0, nrow = nrow(human_vols_males_noTTV), ncol = ncol(human_vols_males_noTTV))
+for(j in 1:ncol(human_vols_males_noTTV)){
+  residuals_HCP_males_noTTV[,j] <- residuals(lm(human_vols_males_noTTV[,j] ~ AGE_cent + euler , data=df_just_males_noTTV))
+}
+### Assign column names and "rebind" demographics data
+colnames(residuals_HCP_males_noTTV)<-colnames(human_vols_males_noTTV)
+df_residuals_HCP_males_noTTV <- HCP_demo_males_noTTV %>% cbind(residuals_HCP_males_noTTV)
+
+## Calculate residualized volumes for females
+df_just_females_noTTV <-df_zscores_HCP_greymatter %>% filter(Sex == "F")
+human_vols_females_noTTV <- df_just_females_noTTV[,31:ncol(df_just_females_noTTV)] #Then subset the volumes for the control observations #vols from 54:461
+HCP_demo_females_noTTV <- df_just_females_noTTV[,1:30]
+
+residuals_HCP_females_noTTV <- matrix(0, nrow = nrow(human_vols_females_noTTV), ncol = ncol(human_vols_females_noTTV))
+for(j in 1:ncol(human_vols_females_noTTV)){
+  residuals_HCP_females_noTTV[,j] <- residuals(lm(human_vols_females_noTTV[,j] ~ AGE_cent + euler , data=df_just_females_noTTV))
+}
+### Assign column names and "rebind" demographics data
+colnames(residuals_HCP_females_noTTV)<-colnames(human_vols_females_noTTV)
+df_residuals_HCP_females_noTTV <- HCP_demo_females_noTTV %>% cbind(residuals_HCP_females_noTTV)
+df_residuals_HCP_noTTV <- rbind(df_residuals_HCP_males_noTTV, df_residuals_HCP_females_noTTV)
+residuals_HCP_noTTV  <- df_residuals_HCP_noTTV[,31:ncol(df_residuals_HCP_noTTV)]
+
+## Perform Levene's test across all regions
+Levene_test_pvalue_noTTV <- matrix(NA, nrow = ncol(residuals_HCP_males_noTTV), ncol= 1)
+Levene_test_fvalue_noTTV <- matrix(NA, nrow = ncol(residuals_HCP_males_noTTV), ncol= 1)
+
+for(i in 1:ncol(residuals_HCP_noTTV)){
+    result <- leveneTest(residuals_HCP_noTTV[,i] ~ Sex, df_residuals_HCP_noTTV)
+#store outputs of interest
+Levene_test_pvalue_noTTV[i,] <- result[1,3] # extract Pr(>F)
+Levene_test_fvalue_noTTV[i,] <- result[1,2] # extract F value
+}
+
+variance_analysis_humans_noTTV <- cbind(Levene_test_fvalue_noTTV, Levene_test_pvalue_noTTV) %>% as.data.frame()
+variance_analysis_humans_noTTV$label <- colnames(residuals_HCP_noTTV)
+colnames(variance_analysis_humans_noTTV) <- c("fvalue_noTTV","pvalue_noTTV","label")
+variance_analysis_humans_noTTV$Hochberg <- p.adjust(variance_analysis_humans_noTTV$pvalue_noTTV,method = "hochberg")
+```
+
+### convert labels for plotting
+```{r}
+variance_analysis_humans_noTTV$label <- gsub("_ROI_volume", "", variance_analysis_humans_noTTV$label)
+variance_analysis_humans_noTTV$label <- gsub("Right.", "Right-", variance_analysis_humans_noTTV$label)
+variance_analysis_humans_noTTV$label <- gsub("Left.", "Left-", variance_analysis_humans_noTTV$label)
+variance_analysis_humans_noTTV$label <- gsub("Right-Cerebellum.Cortex", "right-cerebellum",  variance_analysis_humans_noTTV$label)
+variance_analysis_humans_noTTV$label <- gsub("Left-Cerebellum.Cortex", "left-cerebellum",  variance_analysis_humans_noTTV$label)
+variance_analysis_humans_noTTV$label <- gsub("Whole_brainstem", "brain-stem", variance_analysis_humans_noTTV$label)
+variance_analysis_humans_noTTV$label <- gsub("Whole_hippocampus", "Hippocampus", variance_analysis_humans_noTTV$label)
+variance_analysis_humans_noTTV$label <- gsub("Whole_amygdala", "Amygdala", variance_analysis_humans_noTTV$label)
+variance_analysis_humans_noTTV$label <- gsub("Brain.stem", "brain-stem", variance_analysis_humans_noTTV$label)
+
+## Threshold at 5% FDR
+sig_pos_levene_noTTV <- variance_analysis_humans_noTTV$pvalue < 0.049
+significant_pos_levene_noTTV <-variance_analysis_humans_noTTV[sig_pos_levene_noTTV,]
+sig_neg_levene_noTTV <- variance_analysis_humans_noTTV$pvalue > -0.049
+significant_neg_levene_noTTV <-variance_analysis_humans_noTTV[sig_neg_levene_noTTV,]
+sig_levenes_noTTV <- variance_analysis_humans_noTTV[sig_pos_levene | sig_neg_levene_noTTV, ]
+```
+
+### Plot Variance on Brain
+```{r}
+#Cortical
+##p-value
+ggplot(significant_pos_levene_noTTV) +   
+  geom_brain(atlas = glasser, 
+             colour="white", position = position_brain(hemi +side ~ .),
+             mapping=aes(fill=pvalue_noTTV)) + theme_void() +
+   theme(legend.text = element_text(size = 10))+
+    labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+##q-value
+pdf(file = "/Users/gumae2/Documents/Cross_species_sex_differences/Figures/regional_vols/Human-qvalue-levene_noTTV.pdf",
+     width = 3,
+     height = 6)
+ggplot(significant_pos_levene_noTTV) +   
+  geom_brain(atlas = glasser, 
+             colour="white", position = position_brain(hemi +side ~ .),
+             mapping=aes(fill=Hochberg)) + theme_void() +
+   theme(legend.text = element_text(size = 10))+
+    labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+#Axial
+##p-value
+pdf(file = "/Users/gumae2/Documents/Cross_species_sex_differences/Figures/regional_vols/Human-sig-levene-axial_noTTV.pdf",
+     width = 3,
+     height = 6)
+ggplot(significant_pos_levene_noTTV) +   
+  geom_brain(atlas = aseg, side="coronal",
+               mapping=aes(fill=pvalue_noTTV), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+##q-value
+ggplot(significant_pos_levene_noTTV) +   
+  geom_brain(atlas = aseg, side="coronal",
+               mapping=aes(fill=Hochberg), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+
+#Saggital
+ggplot(significant_pos_levene_noTTV) +   
+  geom_brain(atlas = aseg, side="sagittal",
+               mapping=aes(fill=pvalue_noTTV), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+   labs(title = "Variability (pvalue)", fill="pvalue")+
+ scale_fill_gradient2(low = NULL,
+                        mid = NULL,
+                        high = c("darkviolet","blueviolet","darkorchid1","violet", "thistle"),
+                        midpoint = 0,na.value="grey",limits = c(0,0.05), 
+                        n.breaks=5)
+```
+
+#Plot results on brain surface
+### Turn lmer results into a df (with TBV correction) 
+Here we can threshold the t-values to those above 5%FDR correction (and use those for the Beta values as well). This is for the TBV corrected findings
+```{r}
+model_outputs_Sex_diffs_wTBV$label <- gsub("_ROI_volume", "", model_outputs_Sex_diffs_wTBV$label)
+model_outputs_Sex_diffs_wTBV$label <- gsub("Right.", "Right-", model_outputs_Sex_diffs_wTBV$label)
+model_outputs_Sex_diffs_wTBV$label <- gsub("Left.", "Left-", model_outputs_Sex_diffs_wTBV$label)
+model_outputs_Sex_diffs_wTBV$label <- gsub("Right-Cerebellum.Cortex", "right-cerebellum-white-matter",  model_outputs_Sex_diffs_wTBV$label)
+model_outputs_Sex_diffs_wTBV$label <- gsub("Left-Cerebellum.Cortex", "left-cerebellum-white-matter",  model_outputs_Sex_diffs_wTBV$label)
+model_outputs_Sex_diffs_wTBV$label <- gsub("Whole_brainstem", "brain-stem", model_outputs_Sex_diffs_wTBV$label)
+model_outputs_Sex_diffs_wTBV$label <- gsub("Whole_hippocampus", "Hippocampus", model_outputs_Sex_diffs_wTBV$label)
+model_outputs_Sex_diffs_wTBV$label <- gsub("Whole_amygdala", "Amygdala", model_outputs_Sex_diffs_wTBV$label)
+model_outputs_Sex_diffs_wTBV$label <- gsub("Brain.stem", "brain-stem", model_outputs_Sex_diffs_wTBV$label)
+
+## Threshold at 5% FDR
+sig_tvalues_pos_Sex_wTBV <- model_outputs_Sex_diffs_wTBV$`tvalue-SexM`> 2.34
+significant_positive_tvalues_sex_wTBV <-model_outputs_Sex_diffs_wTBV[sig_tvalues_pos_Sex_wTBV,]
+sig_tvalues_neg_Sex_wTBV <- model_outputs_Sex_diffs_wTBV$`tvalue-SexM`< -2.34
+significant_negative_tvalues_sex_wTBV <-model_outputs_Sex_diffs_wTBV[sig_tvalues_neg_Sex_wTBV,]
+sig_tvalues_Sex_wTBV <- model_outputs_Sex_diffs_wTBV[sig_tvalues_pos_Sex_wTBV | sig_tvalues_neg_Sex_wTBV, ]
+```
+
+### Plot Cortical Volume
+```{r}
+#significant
+ggplot(sig_tvalues_Sex_wTBV) +   
+  geom_brain(atlas = glasser, 
+             colour="white", position = position_brain(hemi +side ~ .),
+             mapping=aes(fill=`beta-SexM`)) + theme_void() +
+   theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (with TTV correction)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+#unthresholded
+ggplot(model_outputs_Sex_diffs_wTBV) +   
+  geom_brain(atlas = glasser, 
+             colour="white", position = position_brain(hemi +side ~ .),
+             mapping=aes(fill=`beta-SexM`)) + theme_void() +
+   theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (with TTV correction)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+```
+
+## Subcortical
+### Axial
+```{r}
+#significant
+ggplot(sig_tvalues_Sex_wTBV) +   
+  geom_brain(atlas = aseg, side="coronal",
+               mapping=aes(fill=`beta-SexM`), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (with TTV correction)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+#uncorrected
+ggplot(model_outputs_Sex_diffs_wTBV) +   
+  geom_brain(atlas = aseg, side="coronal",
+               mapping=aes(fill=`beta-SexM`), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (with TTV correction)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+```
+### Sagittal
+```{r}
+#significant
+ggplot(sig_tvalues_Sex_wTBV) +   
+  geom_brain(atlas = aseg, side="sagittal",
+               mapping=aes(fill=`beta-SexM`), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (with TTV correction)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+#unthresholded
+ggplot(model_outputs_Sex_diffs_wTBV) +   
+  geom_brain(atlas = aseg, side="sagittal",
+               mapping=aes(fill=`beta-SexM`), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (with TTV correction)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+```
+
+
+## Density plot of beta values with TBV
+```{r}
+##With TBV
+## select the columns of interest
+df_human_results_wTBV <- model_outputs_Sex_diffs_wTBV %>% dplyr::select(c(`label`, `beta-SexM`))
+## stack the columns containing the beta values for plotting 
+df_human_results_wTBV$Sexbias <- df_human_results_wTBV$`beta-SexM` 
+df_human_results_wTBV_1 <- df_human_results_wTBV %>% mutate(Sexbias = if_else(`Sexbias` > 0, "Male-bias", "Female-bias"))
+## plot
+ggplot(df_human_results_wTBV_1, aes(x=`beta-SexM`, fill=`Sexbias`, color=`Sexbias`)) +
+    geom_histogram(alpha=.4, binwidth = 0.05) +
+    scale_fill_manual(values=c("Female-bias"="deepskyblue","Male-bias"="goldenrod1"))+
+    scale_colour_manual(values=c("Female-bias"="deepskyblue","Male-bias"="goldenrod1"))+
+    theme_classic()+ xlab("Standardized Effect Size (TTV corrected)")+ylab("Density")+
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 20)) +
+   theme(text = element_text(size = 14))+xlim(-1.5,1.5)+
+    geom_vline(xintercept=c(0)) 
+
+summary_table <- df_human_results_wTBV_1 %>% 
+  dplyr::summarize(
+    mean_beta = mean(`beta-SexM`),
+    median_beta = median(`beta-SexM`),
+    sd_beta=sd(`beta-SexM`),
+    range_beta=range(`beta-SexM`),
+    n = n()
+  )
+summary_table
+
+summary_table <- df_human_results_wTBV_1 %>% 
+  dplyr::group_by(Sexbias) %>% 
+  dplyr::summarize(
+    mean_beta = mean(`beta-SexM`),
+    median_beta = median(`beta-SexM`),
+    sd_beta=sd(`beta-SexM`),
+    range_beta=range(`beta-SexM`),
+    n = n()
+  )
+summary_table
+
+result = leveneTest(`beta-SexM` ~ Sexbias, df_human_results_wTBV_1)
+print(result)
+```
+
+# Test for sex differences without correcting for TTV
+## Run across regions
+```{r}
+Sex_diffs_allorigROI_noTBV_zscore= anatLm(~ Sex + AGE_cent +euler, df_zscores_HCP_gm_orig,df_zscores_HCP_gm_orig[,31:ncol(df_zscores_HCP_gm_orig)])
+FDR_Sex_diffs_allorigROI_noTBV_zscore <- anatFDR(Sex_diffs_allorigROI_noTBV_zscore)
+FDR_Sex_diffs_allorigROI_noTBV_zscore
+
+lm_orig_outputs_Sex_diffs_noTBV <- Sex_diffs_allorigROI_noTBV_zscore %>% as.data.frame()
+lm_orig_outputs_Sex_diffs_noTBV$label <- rownames(Sex_diffs_allorigROI_noTBV_zscore) 
+```
+
+### Turn lm of only glasser and aseg parcellation results into a df (with TBV correction) 
+Here we can threshold the t-values to those above 5%FDR correction (and use those for the Beta values as well). This is for the TBV corrected findings
+```{r}
+lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("_ROI_volume", "", lm_orig_outputs_Sex_diffs_noTBV$label)
+lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Right.", "Right-", lm_orig_outputs_Sex_diffs_noTBV$label)
+lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Left.", "Left-", lm_orig_outputs_Sex_diffs_noTBV$label)
+lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Right-Cerebellum.Cortex", "right-cerebellum-white-matter",  lm_orig_outputs_Sex_diffs_noTBV$label)
+lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Left-Cerebellum.Cortex", "left-cerebellum-white-matter",  lm_orig_outputs_Sex_diffs_noTBV$label)
+#lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Right-Cerebellum.Cortex", "right-cerebellum-cortex", lm_orig_outputs_Sex_diffs_noTBV$label)
+#lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Left-Cerebellum.Cortex", "left-cerebellum-cortex", lm_orig_outputs_Sex_diffs_noTBV$label)
+lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Whole_brainstem", "brain-stem", lm_orig_outputs_Sex_diffs_noTBV$label)
+lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Whole_hippocampus", "Hippocampus", lm_orig_outputs_Sex_diffs_noTBV$label)
+lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Whole_amygdala", "Amygdala", lm_orig_outputs_Sex_diffs_noTBV$label)
+lm_orig_outputs_Sex_diffs_noTBV$label <- gsub("Brain.Stem", "brain-stem", lm_orig_outputs_Sex_diffs_noTBV$label)
+
+## Threshold at 5% FDR
+sig_tvalues_pos_Sex_wTBV_orig_noTBV <- lm_orig_outputs_Sex_diffs_noTBV$`tvalue-SexM`> 3.19
+significant_positive_tvalues_sex_noTBV_orig <-lm_orig_outputs_Sex_diffs_noTBV[sig_tvalues_pos_Sex_wTBV_orig_noTBV,]
+sig_tvalues_neg_Sex_noTBV_orig <- lm_orig_outputs_Sex_diffs_noTBV$`tvalue-SexM`< -3.19
+significant_negative_tvalues_sex_noTBV_orig <-lm_orig_outputs_Sex_diffs_noTBV[sig_tvalues_neg_Sex_noTBV_orig,]
+sig_tvalues_Sex_noTBV_orig <- lm_orig_outputs_Sex_diffs_noTBV[sig_tvalues_pos_Sex_wTBV_orig_noTBV | sig_tvalues_neg_Sex_noTBV_orig, ]
+```
+
+### Plot cortical results
+```{r}
+#significant
+ggplot(sig_tvalues_Sex_noTBV_orig) +   
+  geom_brain(atlas = glasser, 
+             colour="white", position = position_brain(hemi +side ~ .),
+             mapping=aes(fill=`beta-SexM`)) + theme_void() +
+   theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (not TTV corrected)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+#unthresholded 
+ggplot(lm_orig_outputs_Sex_diffs_noTBV) +   
+  geom_brain(atlas = glasser, 
+             colour="white", position = position_brain(hemi +side ~ .),
+             mapping=aes(fill=`beta-SexM`)) + theme_void() +
+   theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (not TTV corrected)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+```
+
+## Subcortical
+### Axial
+```{r}
+#significant
+ggplot(sig_tvalues_Sex_noTBV_orig) +   
+  geom_brain(atlas = aseg, side="coronal",
+               mapping=aes(fill=`beta-SexM`), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (not TTV corrected)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+
+#unthresholded
+ggplot(lm_orig_outputs_Sex_diffs_noTBV) +   
+  geom_brain(atlas = aseg, side="coronal",
+               mapping=aes(fill=`beta-SexM`), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (not TTV corrected)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+```
+
+### Sagittal
+```{r}
+#singificant
+sig_tvalues_Sex_noTBV_orig_sagittal <- sig_tvalues_Sex_noTBV_orig 
+sig_tvalues_Sex_noTBV_orig_sagittal$label <- rownames(sig_tvalues_Sex_noTBV_orig)
+sig_tvalues_Sex_noTBV_orig_sagittal1 <- sig_tvalues_Sex_noTBV_orig_sagittal %>% filter(label %in% c("Left.Cerebellum.Cortex","Right.Cerebellum.Cortex"))
+                   
+ggplot(sig_tvalues_Sex_noTBV_orig) +   
+  geom_brain(atlas = aseg, side="sagittal",
+               mapping=aes(fill=`beta-SexM`), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (not TTV corrected)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-1.5,1.5), 
+                        n.breaks=5)
+#unthresholded
+ggplot(lm_orig_outputs_Sex_diffs_noTBV) +   
+  geom_brain(atlas = aseg, side="sagittal",
+               mapping=aes(fill=`beta-SexM`), show.legend=T) +
+  theme_void() + 
+  theme(legend.text = element_text(size = 10))+
+    labs(title = "Sex diffs (not TTV corrected)", fill="Beta")+
+ scale_fill_gradient2(low = c("navyblue","blue","royalblue","dodgerblue1","deepskyblue1","turquoise3"),
+                        mid = NULL,
+                        high = c("goldenrod1","orange1","firebrick2", "firebrick3","firebrick","red4"),
+                        midpoint = 0,na.value="grey",limits = c(-2,2), 
+                        n.breaks=5)
+```
+
+## Density plot of beta values with TBV
+```{r}
+## select the columns of interest
+df_human_results_noTBV <- lm_orig_outputs_Sex_diffs_noTBV %>% dplyr::select(c(`label`, `beta-SexM`))
+## stack the columns containing the beta values for plotting
+df_human_results_noTBV$Sexbias <- df_human_results_noTBV$`beta-SexM` 
+df_human_results_noTBV_1 <- df_human_results_noTBV %>% mutate(Sexbias = if_else(`Sexbias` > 0, "Male-bias", "Female-bias"))
+## plot
+ggplot(df_human_results_noTBV_1, aes(x=`beta-SexM`, fill=`Sexbias`, color=`Sexbias`)) +
+    geom_histogram(alpha=.4, binwidth = 0.05) +
+    scale_fill_manual(values=c("Female-bias"="deepskyblue","Male-bias"="goldenrod1"))+
+    scale_colour_manual(values=c("Female-bias"="deepskyblue","Male-bias"="goldenrod1"))+
+    theme_classic()+ xlab("Standardized Effect Size (TTV corrected)")+ylab("Density")+
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 20)) +
+   theme(text = element_text(size = 14))+xlim(-1.5,1.5)+
+    geom_vline(xintercept=c(0)) 
+
+summary_table <- df_human_results_noTBV_1 %>% 
+  dplyr::group_by(Sexbias) %>% 
+  dplyr::summarize(
+    mean_beta = mean(`beta-SexM`),
+    sd_beta=sd(`beta-SexM`),
+    range_beta=range(`beta-SexM`),
+    n = n()
+  )
+summary_table
+```

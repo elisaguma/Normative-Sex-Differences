@@ -1,0 +1,688 @@
+---
+title: "Sex-diffs-homologous-ROIs-fullmouse-humans"
+author: "Elisa Guma"
+date: "2/27/2023"
+output: html_document
+---
+# Description
+
+In this script, we identify a subset of brain regions deemed to be "homologous" across humans and mice. 
+We pull these regions (and aggregate across some smaller ones) to obtain a final list of volumes. 
+We use these to correlate the effects of sex on brain volume across species. 
+
+# Load in necessary libraries
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(RMINC)
+library(broom)
+library(data.tree)
+library(ggrepel)
+library(ggplot2)
+library(readr)
+library(sva)
+library(WRS2)
+source('../input_data/tree_tools.R')
+```
+
+# Import Human Data
+```{r}
+df_HCP_volumes <- readRDS("../input_data/human_anatomy/df_HCP_volumes_clean.RDS")
+```
+
+### Remove the subject with low euler number
+```{r}
+df_HCP_volumes_qc <- subset(df_HCP_volumes, df_HCP_volumes$euler > -200 & df_HCP_volumes$QC_include == 1)
+```
+
+
+## Select volumes for ROIs that will be used for homology analysis
+Here we search for regions from our original data matrix that fall within our homologous region definition. ROI names come from the Glasser parcellation.
+```{r}
+HCP_data_homologs <- dplyr::select(df_HCP_volumes_qc, 
+                           "SUBJECT_ID","Subject","Freesurfer_QC_07mm","AGE_cent","Age_in_Yrs","Sex","euler","BrainSegVolNotVent.y",
+                           ends_with("Cerebellum.Cortex"),ends_with("Thalamus"),ends_with("Caudate"),
+                           ends_with("Putamen"),ends_with("Pallidum"),ends_with("Whole_hippocampus"),
+                           ends_with("CA1.body"), ends_with("CA1.head"), ends_with("CA3.body"), ends_with("CA3.head"), ends_with("GC.ML.DG.body"), ends_with("GC.ML.DG.head"),
+                           ends_with("Whole_amygdala"),ends_with("Accumbens.area"), ends_with("Medial.nucleus"),
+                           "Whole_brainstem","Midbrain","Pons","Medulla",
+                           ends_with("BNST"),
+                           ends_with("MPO"),
+                           ends_with("LH"),
+                           ends_with("VM"),
+                           ends_with("DM"),
+                           ends_with("AHA"),
+                           ends_with("V1_ROI_volume"), 
+                           ends_with("4_ROI_volume"), 
+                           ends_with("3a_ROI_volume"), ends_with("3b_ROI_volume"), ends_with("1_ROI_volume"), ends_with("2_ROI_volume"), 
+                           ends_with("A1_ROI_volume"),
+                           ends_with("RSC_ROI_volume"),
+                           ends_with("a24pr_ROI_volume"),ends_with("a24_ROI_volume"),ends_with("p24pr_ROI_volume"),
+                           ends_with("p24_ROI_volume"), ends_with("24dd_ROI_volume"), ends_with("24dv_ROI_volume"),
+                           ends_with("p32pr_ROI_volume"),ends_with("d32_ROI_volume"),ends_with("a32pr_ROI_volume"),
+                           ends_with("p32_ROI_volume"),ends_with("s32_ROI_volume"),
+                           ends_with("AVI_ROI_volume"), 
+                           ends_with("AAIC_ROI_volume"), ends_with("MI_ROI_volume"),                           
+                           ends_with("Pir_ROI_volume"),
+                           ends_with("EC_ROI_volume"),
+                           ends_with("PreS_ROI_volume"),
+                           ends_with("PeEc_ROI_volume"),ends_with("TF_ROI_volume"),ends_with("PHA2_ROI_volume"), ends_with("PHA3_ROI_volume"),
+                           ends_with("10r_ROI_volume"), ends_with("10v_ROI_volume"), 
+                           ends_with("FFC_ROI_volume"), ends_with("PIT_ROI_volume"), ends_with("TE1a_ROI_volume"), ends_with("TE1p_ROI_volume"), 
+                           ends_with("TE2a_ROI_volume"), ends_with("TF_ROI_volume"),
+                           ends_with("STV_ROI_volume"), ends_with("STSvp_ROI_volume"), ends_with("STSva_ROI_volume"),
+                           ends_with("5m_ROI_volume"), ends_with("5mv_ROI_volume"), ends_with("5L_ROI_volume")) 
+```
+
+#Aggregate data
+```{r}
+# Aggregate hypothalamus
+HCP_data_homologs$`Left Hypothalamus` <- HCP_data_homologs$L_LH + HCP_data_homologs$L_VM + HCP_data_homologs$L_DM + HCP_data_homologs$L_AHA
+HCP_data_homologs$`Right Hypothalamus` <- HCP_data_homologs$R_LH + HCP_data_homologs$R_VM + HCP_data_homologs$R_DM + HCP_data_homologs$R_AHA
+
+# Aggregate primary somatosensory cortex
+HCP_data_homologs$`Left Primary somatosensory area` <-HCP_data_homologs$`lh_L_3a_ROI_volume`+ HCP_data_homologs$`lh_L_3b_ROI_volume`+
+  HCP_data_homologs$`lh_L_1_ROI_volume`+HCP_data_homologs$`lh_L_2_ROI_volume`
+HCP_data_homologs$`Right Primary somatosensory area` <-HCP_data_homologs$`rh_R_3a_ROI_volume`+ HCP_data_homologs$`rh_R_3b_ROI_volume`+
+  HCP_data_homologs$`rh_R_1_ROI_volume`+HCP_data_homologs$`rh_R_2_ROI_volume`
+
+# Aggregate caudoputamen
+HCP_data_homologs$`Left Caudoputamen` <-HCP_data_homologs$Left.Caudate+ HCP_data_homologs$Left.Putamen
+HCP_data_homologs$`Right Caudoputamen` <-HCP_data_homologs$Right.Caudate+ HCP_data_homologs$Right.Putamen
+
+# Aggregate CA1
+HCP_data_homologs$`Left Field CA1` <-HCP_data_homologs$Left.CA1.head+ HCP_data_homologs$Left.CA1.head
+HCP_data_homologs$`Right Field CA1` <-HCP_data_homologs$Right.CA1.head+ HCP_data_homologs$Right.CA1.head
+
+# Aggregate CA3
+HCP_data_homologs$`Left Field CA3` <-HCP_data_homologs$Left.CA3.body+ HCP_data_homologs$Left.CA3.head
+HCP_data_homologs$`Right Field CA3` <-HCP_data_homologs$Right.CA3.body+ HCP_data_homologs$Right.CA3.head
+
+# Aggregate DG
+HCP_data_homologs$`Left Dentate gyrus, molecular layer` <-HCP_data_homologs$Left.GC.ML.DG.body+ HCP_data_homologs$Left.GC.ML.DG.head
+HCP_data_homologs$`Right Dentate gyrus, molecular layer` <-HCP_data_homologs$Right.GC.ML.DG.body+ HCP_data_homologs$Right.GC.ML.DG.head
+
+# Aggregate agranular insula cortex
+HCP_data_homologs$`Left Agranular insula` <- HCP_data_homologs$lh_L_AVI_ROI_volume+
+  HCP_data_homologs$lh_L_AAIC_ROI_volume+HCP_data_homologs$lh_L_MI_ROI_volume
+HCP_data_homologs$`Right Agranular insula` <- HCP_data_homologs$rh_R_AVI_ROI_volume+
+  HCP_data_homologs$rh_R_AAIC_ROI_volume+HCP_data_homologs$rh_R_MI_ROI_volume
+
+# Aggregate anterior cingulate cortex
+HCP_data_homologs$`Left Anterior cingulate area` <- HCP_data_homologs$lh_L_a24pr_ROI_volume+ HCP_data_homologs$lh_L_a24_ROI_volume+HCP_data_homologs$lh_L_p24pr_ROI_volume+
+  HCP_data_homologs$lh_L_p24_ROI_volume+HCP_data_homologs$`lh_L_24dd_ROI_volume` +HCP_data_homologs$`lh_L_24dv_ROI_volume` +
+  HCP_data_homologs$lh_L_p32pr_ROI_volume+ HCP_data_homologs$lh_L_d32_ROI_volume + HCP_data_homologs$lh_L_a32pr_ROI_volume + 
+  HCP_data_homologs$lh_L_p32_ROI_volume + HCP_data_homologs$lh_L_s32_ROI_volume
+HCP_data_homologs$`Right Anterior cingulate area` <- HCP_data_homologs$rh_R_a24pr_ROI_volume+ HCP_data_homologs$rh_R_a24_ROI_volume+HCP_data_homologs$rh_R_p24pr_ROI_volume+
+  HCP_data_homologs$rh_R_p24_ROI_volume+HCP_data_homologs$`rh_R_24dd_ROI_volume` +HCP_data_homologs$`rh_R_24dv_ROI_volume` +
+  HCP_data_homologs$rh_R_p32pr_ROI_volume+ HCP_data_homologs$rh_R_d32_ROI_volume + HCP_data_homologs$rh_R_a32pr_ROI_volume + 
+  HCP_data_homologs$rh_R_p32_ROI_volume + HCP_data_homologs$rh_R_s32_ROI_volume
+
+# Aggregate perirhinal cortex                            
+HCP_data_homologs$`Left Perirhinal area` <- HCP_data_homologs$lh_L_PeEc_ROI_volume +HCP_data_homologs$lh_L_TF_ROI_volume+ HCP_data_homologs$lh_L_PHA2_ROI_volume+
+  HCP_data_homologs$lh_L_PHA3_ROI_volume
+HCP_data_homologs$`Right Perirhinal area` <- HCP_data_homologs$rh_R_PeEc_ROI_volume +HCP_data_homologs$rh_R_TF_ROI_volume+ HCP_data_homologs$rh_R_PHA2_ROI_volume+
+  HCP_data_homologs$rh_R_PHA3_ROI_volume
+
+# Aggregate ventral orbital area
+HCP_data_homologs$`Left Ventral orbital area` <- HCP_data_homologs$`lh_L_10r_ROI_volume` +HCP_data_homologs$`lh_L_10v_ROI_volume`
+HCP_data_homologs$`Right Ventral orbital area` <- HCP_data_homologs$`rh_R_10r_ROI_volume` +HCP_data_homologs$`rh_R_10v_ROI_volume`
+
+# Aggregate temporal association cortex
+HCP_data_homologs$`Left Temporal association areas` <- HCP_data_homologs$lh_L_FFC_ROI_volume+ HCP_data_homologs$lh_L_PIT_ROI_volume+ HCP_data_homologs$lh_L_TE1a_ROI_volume+ 
+HCP_data_homologs$lh_L_TE1p_ROI_volume+ HCP_data_homologs$lh_L_TE2a_ROI_volume+ HCP_data_homologs$lh_L_TF_ROI_volume+HCP_data_homologs$lh_L_STV_ROI_volume+ HCP_data_homologs$lh_L_STSvp_ROI_volume+ HCP_data_homologs$lh_L_STSva_ROI_volume
+HCP_data_homologs$`Right Temporal association areas` <- HCP_data_homologs$rh_R_FFC_ROI_volume+ HCP_data_homologs$rh_R_PIT_ROI_volume+ HCP_data_homologs$rh_R_TE1a_ROI_volume+ 
+HCP_data_homologs$rh_R_TE1p_ROI_volume+ HCP_data_homologs$rh_R_TE2a_ROI_volume+ HCP_data_homologs$rh_R_TF_ROI_volume+HCP_data_homologs$rh_R_STV_ROI_volume+ HCP_data_homologs$rh_R_STSvp_ROI_volume+ HCP_data_homologs$rh_R_STSva_ROI_volume
+
+#Aggregate posterior parietal cortex
+HCP_data_homologs$`Left Posterior parietal association areas` <- HCP_data_homologs$`lh_L_5m_ROI_volume`+ HCP_data_homologs$`lh_L_5mv_ROI_volume`+ HCP_data_homologs$`lh_L_5L_ROI_volume`
+HCP_data_homologs$`Right Posterior parietal association areas` <- HCP_data_homologs$`rh_R_5m_ROI_volume`+ HCP_data_homologs$`rh_R_5mv_ROI_volume`+ HCP_data_homologs$`rh_R_5L_ROI_volume`
+
+# Rename regions so that they match the mouse names later on
+HCP_data_homologs <-dplyr::rename(HCP_data_homologs,
+                          `Left Primary visual area`=lh_L_V1_ROI_volume,`Right Primary visual area`=rh_R_V1_ROI_volume,
+                          `Left Primary motor area` = `lh_L_4_ROI_volume`,`Right Primary motor area` = `rh_R_4_ROI_volume`, 
+                          `Left Primary auditory area` = lh_L_A1_ROI_volume, `Right Primary auditory area` = rh_R_A1_ROI_volume,
+                          `Left Retrosplenial area`=lh_L_RSC_ROI_volume, `Right Retrosplenial area`=rh_R_RSC_ROI_volume,
+                          `Left Piriform cortex` =lh_L_Pir_ROI_volume,`Right Piriform cortex` =rh_R_Pir_ROI_volume,
+                          `Left Entorhinal area` =lh_L_EC_ROI_volume,`Right Entorhinal area` =rh_R_EC_ROI_volume,
+                          `Left Subiculum`=lh_L_PreS_ROI_volume,`Right Subiculum`=rh_R_PreS_ROI_volume,
+                          `Left Cerebellar cortex`=Left.Cerebellum.Cortex,`Right Cerebellar cortex`=Right.Cerebellum.Cortex,
+                          `Left Nucleus accumbens`=Left.Accumbens.area,`Right Nucleus accumbens`=Right.Accumbens.area,
+                          `Left Globus pallidus`=`Left.Pallidum`,`Right Globus pallidus`=`Right.Pallidum`,
+                          `Left Amygdala` = `Left.Whole_amygdala`, `Right Amygdala` = `Right.Whole_amygdala`,
+                          `Left Hippocampus` = `Left.Whole_hippocampus`, `Right Hippocampus` = `Right.Whole_hippocampus`,
+                          `Left Medial amygdalar nucleus` = `Left.Medial.nucleus`, `Right Medial amygdalar nucleus` = `Right.Medial.nucleus`, 
+                          `Left Thalamus` = `Left.Thalamus`, `Right Thalamus` = `Right.Thalamus`,
+                          `Brain stem`=`Whole_brainstem`, 
+                          `Left Bed nuclei of the stria terminalis` = L_BNST, `Right Bed nuclei of the stria terminalis` = R_BNST, 
+                          `Left Medial preoptic nucleus` = L_MPO, `Right Medial preoptic nucleus` = R_MPO)
+
+
+# Clean up the names
+human_HCP_data_homologs <- dplyr::select(HCP_data_homologs, -ends_with("volume"), -"Left.Caudate",-"Left.Putamen", -"Right.Caudate",-"Right.Putamen",
+                                         -ends_with("body"), -ends_with("head"), -ends_with("LH"), -ends_with("VM"), -ends_with("DM"),- ends_with("AHA"))
+```
+
+## Generate weights for the gene aggregation
+```{r}
+HCP_data_homologs_vols <- human_HCP_data_homologs[,8:ncol(human_HCP_data_homologs)]
+mean_vols <- colMeans(HCP_data_homologs_vols) %>% as.data.frame()
+colnames(mean_vols) <- "mean_vol_agg"
+mean_vols$label <- rownames(mean_vols)
+mean_vols$aggregate_label <- mean_vols$label
+#write.csv(mean_vols, file="aggregated_vols_human.csv")
+```
+
+## Zscore Human Data
+```{r}
+human_vols <- human_HCP_data_homologs[,8:ncol(human_HCP_data_homologs)] 
+HCP_demo <- human_HCP_data_homologs[,1:7]
+
+zscores_HCP <- matrix(0, nrow = nrow(human_vols), ncol = ncol(human_vols))
+for(j in 1:ncol(human_vols)){
+  mu <- mean(human_vols[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(human_vols[,j]) #And standard deviations
+  zscores_HCP[,j] <- (human_vols[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+
+### Assign column names and "rebind" demographics data
+colnames(zscores_HCP)<-colnames(human_vols)
+df_HCP_homologs <- HCP_demo %>% cbind(zscores_HCP) 
+```
+
+
+### With TBV covariate
+Here we run a linear model testing for group differences (XXY vs XY) covarying for age and total tissue volume so that we can extract standardized beta values for each region of interest.
+```{r}
+Sex_diffs_homologs_lm_wTBV= anatLm(~ Sex + AGE_cent + BrainSegVolNotVent.y + euler, df_HCP_homologs,
+                             df_HCP_homologs[,8:ncol(df_HCP_homologs)])
+FDR_Sex_Lm_wTBV_zscore <- anatFDR(Sex_diffs_homologs_lm_wTBV)
+FDR_Sex_Lm_wTBV_zscore
+
+Human_sex_model_outputs_wTBV <- Sex_diffs_homologs_lm_wTBV %>% as.data.frame()
+Human_sex_model_outputs_wTBV$label <- rownames(Human_sex_model_outputs_wTBV)
+```
+
+### Without TBV covariate
+XXY (repeat the above analysis without total tissue volume correction)
+```{r}
+Sex_diffs_homologs_lm_noTBV= anatLm(~ Sex + AGE_cent + euler, df_HCP_homologs,
+                             df_HCP_homologs[,8:ncol(df_HCP_homologs)])
+FDR_Sex_Lm_noTBV_zscore <- anatFDR(Sex_diffs_homologs_lm_noTBV)
+FDR_Sex_Lm_noTBV_zscore
+
+Human_sex_model_outputs_noTBV <- Sex_diffs_homologs_lm_noTBV %>% as.data.frame()
+Human_sex_model_outputs_noTBV$label <- rownames(Human_sex_model_outputs_noTBV)
+```
+
+
+# Import Mouse Data
+```{r}
+gf <- read_csv("../input_data/mouse_anatomy/mouse_demographics.csv")
+treeVols <- readRDS("../input_data/mouse_anatomy/full_mouse_sampletree.RDS")
+source('../input_data/tree_tools.R')
+```
+
+##First prune out the ventricles and white matter from the tree
+```{r}
+#Create a copy of the tree
+tree_pruned <- Clone(treeVols)
+nodes_to_cut <- c("ventricular systems", "fiber tracts", "medial forebrain bundle system",
+                  "lateral forebrain bundle system","extrapyramidal fiber systems") #remove ventricles and cranial nerves
+pruneAnatTree(tree_pruned, nodes = nodes_to_cut, method = "AtNode")
+```
+
+## Prune tree to have only left ROIs and re-aggregate up the tree
+```{r}
+left_tree <- Clone(tree_pruned)
+Prune(left_tree, pruneFun = function(node){!str_detect(node$name, "right")})
+left_tree_clean <- Clone(left_tree)
+nodes_to_cut <- c("Vermal regions", "Midbrain", "Hindbrain") #remove midline regions
+pruneAnatTree(left_tree_clean, nodes = nodes_to_cut, method = "AtNode")
+
+#Re-aggregate the volumes from the left leaf nodes up the tree
+left_tree_clean$Do(function(node){
+  node$volumes <- Aggregate(node, 'volumes', rowSums)
+}, traversal = 'post-order')
+```
+
+## Prune tree to have only right ROIs & reaggregate
+```{r}
+right_tree <- Clone(tree_pruned)
+Prune(right_tree, pruneFun = function(node){!str_detect(node$name, "left")})
+right_tree_clean <- Clone(right_tree)
+nodes_to_cut <- c("Vermal regions", "Midbrain", "Hindbrain") #remove midline regions
+pruneAnatTree(right_tree_clean, nodes = nodes_to_cut, method = "AtNode")
+
+#Re-aggregate the volumes from the right leaf nodes up the tree
+right_tree_clean$Do(function(node){
+  node$volumes <- Aggregate(node, 'volumes', rowSums)
+}, traversal = 'post-order')
+```
+
+## Prune midline tree to have only right ROIs & reaggregate
+```{r}
+midline_tree <- Clone(tree_pruned)
+Prune(midline_tree, pruneFun = function(node){!str_detect(node$name, "left|right")})
+midline_tree_clean <- Clone(midline_tree)
+nodes_to_merge <- c("Vermal regions", "Midbrain", "Medulla", "Pons") #select midline regions
+pruneAnatTree(midline_tree_clean, nodes = nodes_to_merge, method = "BelowNode")
+
+#Re-aggregate the volumes from the right leaf nodes up the tree
+midline_tree_clean$Do(function(node){
+  node$volumes <- Aggregate(node, 'volumes', rowSums)
+}, traversal = 'post-order')
+```
+
+## Aggregate for the left
+```{r}
+# prune nodes of interest:
+left_tree_for_homology <- Clone(left_tree_clean)
+nodes_to_merge<- c("Piriform cortex", 
+                   "Subiculum",
+                   "Entorhinal area",
+                   "Field CA1",
+                   "Field CA3",
+                   "Dentate gyrus, molecular layer",
+                   "Medial amygdalar nucleus",
+                   "Cortical subplate",
+                   "Anterior cingulate area",
+                   "Retrosplenial area",
+                   "Primary auditory area",
+                   "Agranular insular area",
+                   "Perirhinal area",
+                   "Primary motor area",
+                   "Orbital area, ventrolateral part",
+                   "Primary somatosensory area",
+                   "Primary visual area",
+                   "Temporal association areas",
+                   "Posterior parietal association areas",
+                   "Striatum ventral region",
+                   "Caudoputamen",
+                   "Thalamus",
+                   "Medial preoptic nucleus",
+                   "Hemispheric regions")
+pruneAnatTree(left_tree_for_homology, nodes = nodes_to_merge, method = "BelowNode")
+
+left_tree_leaves <- left_tree_for_homology$Get("name", filterFun = isLeaf) %>% as.data.frame()
+```
+## Aggregate for the right
+```{r}
+# prune nodes of interest:
+right_tree_for_homology <- Clone(right_tree_clean)
+nodes_to_merge<- c("Piriform cortex", 
+                   "Subiculum",
+                   "Entorhinal area",
+                   "Field CA1",
+                   "Field CA3",
+                   "Dentate gyrus, molecular layer",
+                   "Medial amygdalar nucleus",
+                   "Cortical subplate",
+                   "Anterior cingulate area",
+                   "Retrosplenial area",
+                   "Primary auditory area",
+                   "Agranular insular area",
+                   "Perirhinal area",
+                   "Primary motor area",
+                   "Orbital area, ventrolateral part",
+                   "Primary somatosensory area",
+                   "Primary visual area",
+                   "Temporal association areas",
+                   "Posterior parietal association areas",
+                   "Striatum ventral region",
+                   "Caudoputamen",
+                   "Thalamus",
+                   "Medial preoptic nucleus",
+                   "Hemispheric regions")
+pruneAnatTree(right_tree_for_homology, nodes = nodes_to_merge, method = "BelowNode")
+
+right_tree_leaves <- right_tree_for_homology$Get("name", filterFun = isLeaf) %>% as.data.frame()
+```
+
+## Aggregate for the midline
+```{r}
+# prune nodes of interest:
+midline_tree_for_homology <- Clone(midline_tree_clean)
+nodes_to_merge<- c("Midbrain", "Medulla", "Pons")
+pruneAnatTree(midline_tree_for_homology, nodes = nodes_to_merge, method = "BelowNode")
+midline_tree_leaves <- midline_tree_for_homology$Get("name", filterFun = isLeaf) %>% as.data.frame()
+```
+
+## Convert mouse volumes to tibble and filter for the left, right, and midline trees
+### LEFT
+```{r}
+mouse_vols_left <- left_tree_for_homology$Get("volumes") %>% as_tibble
+filtered_mouse_vols_left <- dplyr::select(mouse_vols_left,"Piriform cortex", 
+                   "Subiculum",
+                   "Entorhinal area",
+                   "Field CA1",
+                   "Field CA3",
+                   "Dentate gyrus, molecular layer",
+                   "Hippocampal region",
+                   "Medial amygdalar nucleus",
+                   "Cortical subplate",
+                   "Anterior cingulate area",
+                   "Retrosplenial area",
+                   "Primary auditory area",
+                   "Agranular insular area",
+                   "Perirhinal area",
+                   "Primary motor area",
+                   "Orbital area, ventrolateral part",
+                   "Primary somatosensory area",
+                   "Primary visual area",
+                   "Temporal association areas",
+                   "Posterior parietal association areas",
+                   "Pallidum",
+                   "left Bed nuclei of the stria terminalis",
+                   "Striatum ventral region",
+                   "Caudoputamen",
+                   "Thalamus",
+                   "Medial preoptic nucleus",
+                   "Hypothalamus", 
+                   "Medial preoptic nucleus",
+                   "Hypothalamus",
+                   "Hemispheric regions")
+
+mouse_homologs_left<-dplyr::rename(filtered_mouse_vols_left,
+                          `Amygdala` = `Cortical subplate`,
+                          `Agranular insula`=`Agranular insular area`,
+                          `Ventral orbital area` = `Orbital area, ventrolateral part`,
+                          `Nucleus accumbens` = `Striatum ventral region`,
+                          `Hippocampus`=`Hippocampal region`,
+                          `Nucleus accumbens`=`Striatum ventral region`,
+                          `Globus pallidus`=`Pallidum`,
+                          `Bed nuclei of the stria terminalis` = `left Bed nuclei of the stria terminalis`,
+                          `Cerebellar cortex`=`Hemispheric regions`)
+        
+
+colnames(mouse_homologs_left)<-sub("^","Left ",colnames(mouse_homologs_left))
+```
+
+### RIGHT
+## Convert mouse volumes to tibble and filter for the left, right, and midline trees
+```{r}
+mouse_vols_right <- right_tree_for_homology$Get("volumes") %>% as_tibble
+filtered_mouse_vols_right <- dplyr::select(mouse_vols_right, "Piriform cortex", 
+                   "Subiculum",
+                   "Entorhinal area",
+                   "Field CA1",
+                   "Field CA3",
+                   "Dentate gyrus, molecular layer",
+                   "Hippocampal region",
+                   "Medial amygdalar nucleus",
+                   "Cortical subplate",
+                   "Anterior cingulate area",
+                   "Retrosplenial area",
+                   "Primary auditory area",
+                   "Agranular insular area",
+                   "Perirhinal area",
+                   "Primary motor area",
+                   "Orbital area, ventrolateral part",
+                   "Primary somatosensory area",
+                   "Primary visual area",
+                   "Temporal association areas",
+                   "Posterior parietal association areas",
+                   "Pallidum",
+                   "right Bed nuclei of the stria terminalis",
+                   "Striatum ventral region",
+                   "Caudoputamen",
+                   "Thalamus",
+                   "Medial preoptic nucleus",
+                   "Hypothalamus", 
+                   "Medial preoptic nucleus",
+                   "Hypothalamus",
+                   "Hemispheric regions")
+
+mouse_homologs_right<-dplyr::rename(filtered_mouse_vols_right,
+                          `Amygdala` = `Cortical subplate`,
+                          `Agranular insula`=`Agranular insular area`,
+                          `Ventral orbital area` = `Orbital area, ventrolateral part`,
+                          `Nucleus accumbens` = `Striatum ventral region`,
+                          `Hippocampus`=`Hippocampal region`,
+                          `Nucleus accumbens`=`Striatum ventral region`,
+                          `Globus pallidus`=`Pallidum`,
+                          `Bed nuclei of the stria terminalis` = `right Bed nuclei of the stria terminalis`,
+                          `Cerebellar cortex`=`Hemispheric regions`)
+
+colnames(mouse_homologs_right)<-sub("^","Right ",colnames(mouse_homologs_right))
+```
+
+### MIDLINE
+## Convert mouse volumes to tibble and filter for the left, right, and midline trees
+```{r}
+mouse_vols_midline <- midline_tree_for_homology$Get("volumes") %>% as_tibble
+filtered_mouse_vols_midline <- dplyr::select(mouse_vols_midline,
+                                          "Midbrain", "Medulla", "Pons", "Hindbrain")
+
+filtered_mouse_vols_midline$`Brain stem` <- filtered_mouse_vols_midline$Midbrain + filtered_mouse_vols_midline$Hindbrain 
+mouse_homologs_midline <-filtered_mouse_vols_midline
+
+#mouse_homologs_midline <- dplyr::select(filtered_mouse_vols_midline,-"Midbrain", -"Hindbrain")
+```
+
+## Calculate total tissue volume
+```{r}
+vols <- treeVols$Get("volumes") %>% as_tibble
+vols_leafs <- treeVols$Get("volumes", filterFun= isLeaf) %>% as_tibble
+
+dat <- vols %>%  cbind(gf)
+gf$ventricle_volume <- vols$`ventricular systems`
+gf$total_tissue_volume<- dat$root2 - gf$ventricle_volume
+gf1 <- dplyr::select(gf, -"ventricle_volume")
+```
+
+## Merge and clean up data frames
+```{r}
+df_filtered_mouse_vols <- gf1 %>%  cbind(mouse_homologs_left) %>%  cbind(mouse_homologs_right) %>%  cbind(mouse_homologs_midline)
+```
+## Filter mouse data
+```{r}
+nLimit <- 4
+balanced_groups_by_cohort5_1 <-  df_filtered_mouse_vols %>% filter(Is_Wildtype == "WT" & !duplicated(Mouse_ID))
+balanced_groups_by_cohort5 <- balanced_groups_by_cohort5_1 %>%  
+  dplyr::group_by(Study_Name) %>% 
+  dplyr::summarize(nF=sum(Mouse_Sex == "F"),
+            nM=sum(Mouse_Sex == "M"),
+             n = n()) %>%
+  filter (nF > nLimit & nM > nLimit)
+balanced_groups_by_cohort5
+
+balanced_groups_by_cohort5 <- balanced_groups_by_cohort5_1 %>% 
+  filter (Study_Name %in% balanced_groups_by_cohort5$Study_Name & Treatment_Code %in% c("none", "MOCK", "VEH", "Control","Saline") &
+                                                     Background %in% c("C57BL-6J", "C57BL-6N", "C57BL6-N","C57BL-6"))
+
+
+df_balanced_groups_by_cohort51 <- balanced_groups_by_cohort5 %>% 
+          mutate(Mouse_Age = str_remove(Mouse_Age,"P")) %>%
+          separate(Mouse_Age, c("a", "b"), fill = "right") %>%
+          mutate(a = as.numeric(a), b = as.numeric(b)) %>%
+          mutate(Mouse_Age = ifelse(is.na(b) == FALSE, (a + b)/2, 
+                                    a), .after = Mouse_Sex) %>%
+          dplyr::select(-c(a,b)) 
+#Replace NAs with age of 60
+df_balanced_groups_by_cohort51["Mouse_Age"][is.na(df_balanced_groups_by_cohort51["Mouse_Age"])] <- 60
+df_balanced_groups_by_cohort5 <- df_balanced_groups_by_cohort51%>% filter(Mouse_Age < 200)
+
+df_balanced_groups_by_cohort5$AGE_cent <- df_balanced_groups_by_cohort5$Mouse_Age - mean(df_balanced_groups_by_cohort5$Mouse_Age)
+
+table(df_balanced_groups_by_cohort5$Mouse_Sex, df_balanced_groups_by_cohort5$Study_Name)
+table(df_balanced_groups_by_cohort5$Mouse_Sex, df_balanced_groups_by_cohort5$Background)
+table(df_balanced_groups_by_cohort5$Background, df_balanced_groups_by_cohort5$Study_Name)
+```
+
+# Apply ComBat
+```{r}
+# Apply ComBat to each background strain
+df_just_C57BL6J <-df_balanced_groups_by_cohort5 %>% filter(Background == "C57BL-6J")
+table(df_just_C57BL6J$Study_Name, df_just_C57BL6J$Mouse_Sex)
+
+df_just_C57BL6N <-df_balanced_groups_by_cohort5 %>% filter(Background %in% c("C57BL-6N","C57BL6-N"))
+table(df_just_C57BL6N$Study_Name, df_just_C57BL6N$Mouse_Sex)
+df_just_C57BL6N$Background <- gsub("C57BL6-N", "C57BL-6N", df_just_C57BL6N$Background)
+
+# C57BL6J
+mouse_vols_C57BL6J_t <- t(as.matrix(df_just_C57BL6J[,34:95]))
+mouse_demo_C57BL6J <- df_just_C57BL6J[,c(1:9,96)]
+
+cohort_batch_C57BL6J <- df_just_C57BL6J$Study_Name 
+combat_vols_cohort_C57BL6J <- sva::ComBat(dat = mouse_vols_C57BL6J_t, batch= cohort_batch_C57BL6J)
+
+combat_vols_C57BL6J_reoriented <- t(combat_vols_cohort_C57BL6J)
+df_combat_C57BL6J_vols <- mouse_demo_C57BL6J %>%  cbind(combat_vols_C57BL6J_reoriented) %>% as.data.frame()
+
+# C57BL6N
+mouse_vols_C57BL6N_t <- t(as.matrix(df_just_C57BL6N[,34:95]))
+mouse_demo_C57BL6N <- df_just_C57BL6N[,c(1:9,96)]
+
+cohort_batch_C57BL6N <- df_just_C57BL6N$Study_Name %>% as.factor()
+combat_vols_cohort_C57BL6N <- sva::ComBat(dat = mouse_vols_C57BL6N_t, batch = cohort_batch_C57BL6N)
+
+combat_vols_C57BL6N_reoriented <- t(combat_vols_cohort_C57BL6N)
+df_combat_C57BL6N_vols <- mouse_demo_C57BL6N %>%  cbind(combat_vols_C57BL6N_reoriented) %>% as.data.frame()
+
+df_combat_vols <- rbind(df_combat_C57BL6J_vols, df_combat_C57BL6N_vols)
+
+saveRDS(df_combat_vols, "/Users/gumae2/Documents/Cross_species_sex_differences/mouse_data/Mouse_homologs_aggregated_postcombat.RDS")
+write.csv(df_combat_vols, "/Users/gumae2/Documents/Cross_species_sex_differences/mouse_data/Mouse_homologs_aggregated_postcombat.csv")
+```
+
+# Calculate z-scores
+```{r}
+mouse_vols <- df_combat_vols[,11:ncol(df_combat_vols)] %>% as.matrix()
+mouse_demo <- df_combat_vols[,c(1:10)]
+
+zscores_volumes <- matrix(0, nrow = nrow(mouse_vols), ncol = ncol(mouse_vols))
+for(j in 1:ncol(mouse_vols)){
+  mu <- mean(mouse_vols[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_vols[,j]) #And standard deviations
+  zscores_volumes[,j] <- (mouse_vols[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscores_volumes)<-colnames(mouse_vols)
+df_zscored_data_homologs <- mouse_demo %>%  cbind(zscores_volumes)
+write.csv(df_combat_vols, "/Users/gumae2/Documents/Cross_species_sex_differences/mouse_data/Mouse_homologs_aggregated_postcombat_zscored.csv")
+```
+
+### With TBV covariate
+Tun the linear model testing for group, correcting for total tissue volume to extract standardized beta values
+```{r}
+sexdiff_mouse_lm_wTBV <- anatLm(~ Mouse_Sex+Background + total_tissue_volume + AGE_cent , df_zscored_data_homologs,
+                             df_zscored_data_homologs[,10:ncol(df_zscored_data_homologs)])
+FDR_sexdiff_mouse_wTBV <- anatFDR(sexdiff_mouse_lm_wTBV)
+FDR_sexdiff_mouse_wTBV
+
+Sex_mouse_model_outputs_wTBV <- sexdiff_mouse_lm_wTBV %>% as.data.frame()
+Sex_mouse_model_outputs_wTBV$label <- rownames(Sex_mouse_model_outputs_wTBV)
+write.csv(Sex_mouse_model_outputs_wTBV, file="/Users/gumae2/Documents/Cross_species_sex_differences/cross-species/homologous_ROI_full_mouse_lm_outputs_combat_c57.csv")
+```
+
+### Without TBV covariate
+Tun the linear model testing for group, correcting for total tissue volume to extract standardized beta values
+```{r}
+sexdiff_mouse_lm_noTBV <- anatLm(~ Mouse_Sex + AGE_cent + Background, df_zscored_data_homologs,
+                             df_zscored_data_homologs[,10:ncol(df_zscored_data_homologs)])
+FDR_sexdiff_mouse_noTBV <- anatFDR(sexdiff_mouse_lm_noTBV)
+FDR_sexdiff_mouse_noTBV
+
+Sex_mouse_model_outputs_noTBV <- sexdiff_mouse_lm_noTBV %>% as.data.frame()
+Sex_mouse_model_outputs_noTBV$label <- rownames(Sex_mouse_model_outputs_noTBV)
+write.csv(Sex_mouse_model_outputs_noTBV, file="/Users/gumae2/Documents/Cross_species_sex_differences/cross-species/homologous_ROI_full_mouse_lm_noTTV_combat_c57.csv")
+```
+
+
+# Plots with TBV 
+Plot the effects for sex across both species
+```{r}
+# Merge the human and mouse beta values
+Human_sex_model_outputs_wTBV_filtered <- dplyr::select(Human_sex_model_outputs_wTBV, "label", "beta-SexM")
+Sex_mouse_model_outputs_wTBV_filtered <- dplyr::select(Sex_mouse_model_outputs_wTBV, "label", "beta-Mouse_SexM")
+
+human_and_mouse_results_wTBV<-merge(Human_sex_model_outputs_wTBV_filtered, Sex_mouse_model_outputs_wTBV_filtered, by="label")
+human_and_mouse_results_wTBV$label <- as.character(human_and_mouse_results_wTBV$label)
+```
+
+### Correlate effects
+Calculate correlations
+```{r}
+pbcor(human_and_mouse_results_wTBV$`beta-SexM`,human_and_mouse_results_wTBV$`beta-Mouse_SexM`)
+```
+
+### Plot results
+```{r}
+Sex_diffs_plot_wTBV <- ggplot(human_and_mouse_results_wTBV, aes(x=`beta-SexM`, y=`beta-Mouse_SexM`, 
+                                                              label=sexdiff_label)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = sexdiff_label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 45)+
+  geom_smooth(method = MASS::rlm) + 
+  theme_classic()+xlab("Effect Size Human")+ ylab("Effect Size Mouse")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="none")+
+ xlim(-0.8,0.8) + ylim(-0.8,0.8)+ 
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+Sex_diffs_plot_wTBV
+```
+
+## Assign cortical or non cortical label
+```{r}
+human_and_mouse_results_wTBV$cort_vs_subcort <- human_and_mouse_results_wTBV$label
+human_and_mouse_results_wTBV$cort_vs_subcort[1] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[2] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[3] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[4] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[5:8] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[9] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[10:17]<- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[18:25] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[26] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[27] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[28] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[29] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[30:32] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[33] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[34] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[35] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[36:39] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[40] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[41:48] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[49:56] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[57] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[58] <- "Cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[59] <- "Not cortex"
+human_and_mouse_results_wTBV$cort_vs_subcort[60] <- "Cortex"
+```
+
+### Correlate effects in cortex and subcortex
+Calculate correlations
+```{r}
+cortex_only  <- human_and_mouse_results_wTBV %>% filter(cort_vs_subcort %in% c("Cortex")) 
+subcortex_only  <- human_and_mouse_results_wTBV %>% filter(cort_vs_subcort %in% c("Not cortex")) 
+
+pbcor(cortex_only$`beta-SexM`, cortex_only$`beta-Mouse_SexM`)
+pbcor(subcortex_only$`beta-SexM`, subcortex_only$`beta-Mouse_SexM`)
+```
+
+## PLot results based on cortex/not cortex
+```{r}
+Sex_diffs_plot_wTBV_cort_subcort <- ggplot(human_and_mouse_results_wTBV, aes(x=`beta-SexM`, y=`beta-Mouse_SexM`, 
+                                                              label=label, group=cort_vs_subcort, col=cort_vs_subcort)) +
+  geom_point()+ 
+  geom_label_repel(aes(label = label), size = 3, hjust = 0.5, box.padding = 0.5,
+                  point.padding=0.5, nudge_x = 0, nudge_y=0, max.overlaps = 25)+
+  geom_smooth(method = MASS::rlm) +
+  theme_classic()+xlab("Effect Size Human")+ ylab("Effect Size Mouse")+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), 
+        plot.title = element_text(hjust = 0.5, size = 15, face="bold"),
+        legend.position="bottom")+
+ xlim(-0.8,0.8) + ylim(-0.8,0.8)+ 
+  scale_fill_manual(values=c("springgreen4", "mediumorchid4"))+ 
+  scale_color_manual(values = c("springgreen4", "mediumorchid4"))+
+  geom_vline(xintercept=c(0), linetype="dashed", alpha=0.4)+
+  geom_hline(yintercept=c(0), linetype="dashed", alpha=0.4)
+Sex_diffs_plot_wTBV_cort_subcort
+```
+

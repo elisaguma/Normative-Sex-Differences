@@ -1,0 +1,1078 @@
+---
+title: "Final-full-mouse-analysis-combat"
+author: "Elisa Guma"
+date: "3/15/2023"
+output: html_document
+---
+### Description
+
+Here I will analyze the full sample of mouse controls to get a first pass at sex differences in the mouse brain.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(width = 300)
+library(RMINC)
+library(data.tree)
+library(grid)
+library(PupillometryR)
+library(MRIcrotome)
+library(tidyverse)
+library(reshape2)
+library(car)
+library(lme4)
+library(lmerTest)
+source('../input_data/tree_tools.R')
+library(sva)
+```
+
+
+# Description
+In this script I aim to compute maps of sex differences in the brain using in a 
+large collection of WT mice on a C57BL6/J or N background.
+
+I characterize differences sex differences in total and regional brain volume (both
+with and without total brain volume covariation). In addition to mean differences, I 
+also investigate sex differences in anatomical variance. 
+
+# Import demographics data
+The data exists in two forms - an RData file containing the volumes, and a CSV file describing each scan. Let's load both:
+```{r}
+volumes <- load("../input_data/Volumes_150.RData")
+gf <- read_csv("../input_data/mouse_demographics.csv")
+```
+Check that you tree volume dimensions match the demographics spreadsheet
+```{r}
+dim(gf)
+dim(vols)
+```
+
+# Set up hierarchical atlas
+```{r make-the-tree}
+# this file contains the definitions of all our labels
+defs <- "../mouse_anatomy/input_data/DSURQE_40micron_R_mapping.csv"
+
+# this file contains the Allen institutes hierarchical definitions
+abijson <- "../mouse_anatomy/Allen_hierarchy_definitions.json"
+
+# now we combine our label definitions with the hierarchical structure
+hdefs_tree <- makeMICeDefsHierachical(defs, abijson) 
+
+# and then we add the volume information to those hierarchies
+hdefs_tree <- addVolumesToHierarchy(hdefs_tree, vols)
+```
+
+## Read in the label and anatomical volumes
+```{r} 
+labelVol <- mincArray(mincGetVolume("../mouse_anatomy/DSURQE_40micron_labels.mnc"))
+anatVol <- mincArray(mincGetVolume("../mouse_anatomy/DSURQE_40micron_average.mnc"))
+```
+
+## Add volumes to hierarchical tree
+With the hierarchies established, it’s time to add the volumes to hierarchical tree.
+```{r}
+hdefs_tree <- addVolumesToHierarchy(hdefs_tree, vols)
+class(hdefs_tree)
+labelCols <- hanatToVolume(hdefs_tree, labelVol, "color_hex_triplet") #load in the Allen atlas colours to display next to the results
+```
+
+## Extract volumes into data fram
+```{r make-final-data}
+df_volumes <- hdefs_tree$Get("volumes") %>% as_tibble
+gf$ventricle_volume <- df_volumes$`ventricular systems`
+gf$TBV <- df_volumes$`root2`
+gf$total_tissue_volume <- gf$TBV - gf$ventricle_volume
+```
+
+## Prune white matter and ventricles out of tree
+### Whole tree
+```{r}
+#Clone the tree so that any changes you make do not affect your original tree
+hdefsCopy <- Clone(hdefs_tree)
+nodes_to_cut <- c("ventricular systems", "fiber tracts") #remove ventricles and cranial nerves
+pruneAnatTree(hdefsCopy, nodes = nodes_to_cut, method = "AtNode")
+df_volumes_pruned <- hdefsCopy$Get("volumes") %>% as_tibble
+```
+### Extract just leaves from data 
+```{r}
+df_volumes_pruned_leaves <- hdefsCopy$Get("volumes", filterFun = isLeaf) %>% as_tibble
+```
+
+### Assign colour palette for positive and negative beta values 
+```{r}
+positive_cols <- function() {
+  getOption("MRIcrotomeCol", colorRampPalette(c("yellow","red"))(255))
+}
+negative_cols <- function() {
+  getOption("MRIcrotomeRcol", colorRampPalette(c("turquoise3","royalblue"))(255))
+}
+labelCols <- hanatToVolume(hdefsCopy, labelVol, "color_hex_triplet") #load in the Allen atlas colours to display next to the results
+```
+
+## Filter to WT only 
+### Whole tree
+```{r}
+pre_export <- gf %>% dplyr::select(Mouse_ID, Is_Wildtype, Background,
+                        Study_Name, Mouse_Sex, Mouse_Age, Timepoint, Treatment_Code, TBV, total_tissue_volume) %>%
+          bind_cols(df_volumes_pruned) %>% distinct(Mouse_ID, .keep_all = TRUE) 
+
+export1 <- pre_export %>% 
+          dplyr::mutate(Mouse_Age = str_remove(Mouse_Age,"P")) %>%
+          separate(Mouse_Age, c("a", "b"), fill = "right") %>%
+          dplyr::mutate(a = as.numeric(a), b = as.numeric(b)) %>%
+          dplyr::mutate(Mouse_Age = ifelse(is.na(b) == FALSE, (a + b)/2, 
+                                    a), .after = Mouse_Sex) %>% dplyr::select(-c(a,b))
+
+#Replace NAs with age of 60 (standard age for the mice acquired in the studies)
+export1["Mouse_Age"][is.na(export1["Mouse_Age"])] <- 60 
+export <- export1 %>% filter(Mouse_Age < 200)
+#print(export$Mouse_Age)
+export$AGE_cent <- export$Mouse_Age - mean(export$Mouse_Age)
+```
+
+## Subset data such that there are at least 5M and 5F per group
+### Whole tree
+```{r}
+nLimit <- 4
+balanced_groups_by_cohort5_1 <-  export %>% filter(Is_Wildtype == "WT" & !duplicated(Mouse_ID) & Treatment_Code %in% c("none", "MOCK", "VEH", "Control","Saline") &
+                                                     Background %in% c("C57BL-6J", "C57BL-6N", "C57BL6-N","C57BL-6"))
+balanced_groups_by_cohort5 <- balanced_groups_by_cohort5_1 %>%  
+  dplyr::group_by(Study_Name) %>% 
+  dplyr::summarize(nF=sum(Mouse_Sex == "F"),
+            nM=sum(Mouse_Sex == "M"),
+             n = n()) %>%
+  dplyr::filter(nF > nLimit & nM > nLimit)
+balanced_groups_by_cohort5
+
+balanced_groups_by_cohort5 <- balanced_groups_by_cohort5_1 %>% 
+  filter (Study_Name %in% balanced_groups_by_cohort5$Study_Name)
+
+table(balanced_groups_by_cohort5$Background, balanced_groups_by_cohort5$Study_Name)
+table(balanced_groups_by_cohort5$Background, balanced_groups_by_cohort5$Mouse_Sex)
+table(balanced_groups_by_cohort5$Study_Name, balanced_groups_by_cohort5$Mouse_Sex)
+table(balanced_groups_by_cohort5$Background,balanced_groups_by_cohort5$Study_Name, balanced_groups_by_cohort5$Mouse_Sex)
+
+# grab the distinct cohort names from the cohorts data 
+cohort_names <- unique(balanced_groups_by_cohort5$Study_Name)
+
+# look at mean age per sex and sample size
+demographics_table5 <- balanced_groups_by_cohort5 %>% 
+  dplyr::group_by(Mouse_Sex) %>% 
+  dplyr::summarize(
+    mean_age = mean(Mouse_Age),
+    sd_age = sd(Mouse_Age),
+    range_age=range(Mouse_Age),
+    n = n())
+demographics_table5
+
+# export csv
+balanced_groups_by_cohort5$Background <- gsub("C57BL6-N", "C57BL-6N", balanced_groups_by_cohort5$Background)
+write.csv(balanced_groups_by_cohort5, file="/Users/gumae2/Documents/Cross_species_sex_differences/mouse_data/input_data/WT_mouse_data_C57.csv")
+```
+
+## Subset the data so it's just C57BL6J and 6N
+```{r}
+df_just_C57BL6J <-balanced_groups_by_cohort5 %>% filter(Background == "C57BL-6J")
+table(df_just_C57BL6J$Study_Name, df_just_C57BL6J$Mouse_Sex)
+chisq.test(df_just_C57BL6J$Mouse_Sex, df_just_C57BL6J$Study_Name)
+
+df_just_C57BL6N <-balanced_groups_by_cohort5 %>% filter(Background %in% c("C57BL-6N","C57BL6-N"))
+table(df_just_C57BL6N$Study_Name, df_just_C57BL6N$Mouse_Sex)
+chisq.test(df_just_C57BL6N$Mouse_Sex, df_just_C57BL6N$Study_Name)
+```
+
+
+# Apply ComBat harmonization
+Here we separate the background strains and apply ComBat harmonization within each, separately,
+to account for any potential study specific variance that we are not insterested in modeling.
+```{r}
+# C57BL6J
+mouse_vols_C57BL6J_t <- t(as.matrix(df_just_C57BL6J[,10:464]))
+mouse_demo_C57BL6J <- df_just_C57BL6J[,c(1:9,465)]
+
+cohort_batch_C57BL6J <- df_just_C57BL6J$Study_Name
+combat_vols_cohort_C57BL6J <- sva::ComBat(dat = mouse_vols_C57BL6J_t, batch = cohort_batch_C57BL6J)
+
+combat_vols_C57BL6J_reoriented <- t(combat_vols_cohort_C57BL6J)
+df_combat_C57BL6J_vols <- mouse_demo_C57BL6J %>%  cbind(combat_vols_C57BL6J_reoriented) %>% as.data.frame()
+
+# C57BL6N
+mouse_vols_C57BL6N_t <- t(as.matrix(df_just_C57BL6N[,10:464]))
+mouse_demo_C57BL6N <- df_just_C57BL6N[,c(1:9,465)]
+
+cohort_batch_C57BL6N <- df_just_C57BL6N$Study_Name
+combat_vols_cohort_C57BL6N <- sva::ComBat(dat = mouse_vols_C57BL6N_t, batch = cohort_batch_C57BL6N)
+
+combat_vols_C57BL6N_reoriented <- t(combat_vols_cohort_C57BL6N)
+df_combat_C57BL6N_vols <- mouse_demo_C57BL6N %>%  cbind(combat_vols_C57BL6N_reoriented) %>% as.data.frame()
+
+df_combat_vols <- rbind(df_combat_C57BL6J_vols, df_combat_C57BL6N_vols)
+```
+## Demographics Analysis
+```{r}
+# look at mean age per sex and sample size
+demographics_cobmat <- df_combat_vols %>% 
+  dplyr::group_by(Mouse_Sex) %>% 
+  dplyr::summarize(
+    mean_age = mean(Mouse_Age),
+    sd_age = sd(Mouse_Age),
+    range_age=range(Mouse_Age),
+    n = n())
+demographics_cobmat
+
+summary(aov(Mouse_Age ~ Mouse_Sex, df_combat_vols))
+chisq.test(df_combat_vols$Mouse_Sex, df_combat_vols$Study_Name)
+```
+
+## Calculate percent difference in volume for total tissue volume
+```{r}
+mean_difference <- df_combat_vols %>% 
+  dplyr::group_by(Mouse_Sex) %>% 
+  dplyr::summarize(
+    mean_ttv = mean(total_tissue_volume),
+    sd_ttv=sd(total_tissue_volume),
+    n = n()
+  )
+mean_difference
+
+female_mean <-430.4453		
+male_mean <- 431.8090
+pct_diff = ((male_mean - female_mean)/((male_mean + female_mean)/2))*100
+pct_diff
+```
+
+### Z-score volumes following ComBat harmonization
+```{r}
+mouse_vols_combat <- df_combat_vols[,11:ncol(df_combat_vols)] %>% as.matrix()
+mouse_demo_combat <- df_combat_vols[,c(1:10)]
+
+zscores_volumes_combat <- matrix(0, nrow = nrow(mouse_vols_combat), ncol = ncol(mouse_vols_combat))
+for(j in 1:ncol(mouse_vols_combat)){
+  mu <- mean(mouse_vols_combat[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_vols_combat[,j]) #And standard deviations
+  zscores_volumes_combat[,j] <- (mouse_vols_combat[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscores_volumes_combat)<-colnames(mouse_vols_combat)
+df_zscored_data_combat <- mouse_demo_combat %>%  cbind(zscores_volumes_combat) %>% as.data.frame()
+
+
+### Check for outliers
+df_data_no_outliers_combat <- df_zscored_data_combat %>% dplyr::mutate(across(!c("Mouse_ID","Is_Wildtype","Background",
+                                                                        "Study_Name","Mouse_Sex","Mouse_Age","Timepoint", "AGE_cent",
+                                                                        "Treatment_Code"), ~ ifelse(.x <= -4*sd(.x) + mean(.x), NA, 
+                                             ifelse(.x >= 4*sd(.x) + mean(.x), NA, .x)))) 
+```
+
+No outliers were detected so we proceed.
+
+# FULL SAMPLE (ComBat harmonized)
+
+## Total tissue volume
+### Linear Model
+```{r}
+linearmodel <- lm(total_tissue_volume ~ Mouse_Sex+Background + AGE_cent, data=df_zscored_data_combat)
+summary(linearmodel)
+
+summary(df_zscored_data_combat$total_tissue_volume)
+```
+
+## Variance in total tissue volume
+```{r}
+# Run leveneTest() to check for differences in variance
+result = leveneTest(total_tissue_volume ~ Mouse_Sex, df_zscored_data_combat)
+print(result)
+
+ggplot(df_zscored_data_combat, aes(x=total_tissue_volume, fill=Mouse_Sex, color=Mouse_Sex)) +
+    geom_density(alpha=.4, adjust = 0.5) +
+    theme_classic()+ xlab("Total Tissue Volume")+ylab("Density")+
+    scale_fill_manual(values=c("F"="deepskyblue","M"="goldenrod1"))+
+    scale_colour_manual(values=c("F"="deepskyblue","M"="goldenrod1"))+
+   theme(text = element_text(size = 14))+
+    geom_vline(xintercept=c(0))
+
+summary_table <- df_zscored_data_combat %>% 
+  group_by(Mouse_Sex) %>%
+  dplyr::summarize(
+    mean_ttv = mean(`total_tissue_volume`),
+    median_ttv = median(`total_tissue_volume`),
+    sd_ttv=sd(`total_tissue_volume`),
+    range_ttv=range(`total_tissue_volume`),
+    n = n()
+  )
+summary_table
+```
+
+### Plot total tissue volume
+```{r}
+## zscore total tissue volume
+mu_ttv<- mean(df_combat_vols$total_tissue_volume)
+sigma_ttv <- sd(df_combat_vols$total_tissue_volume)
+
+ggplot(df_zscored_data_combat, aes(x = Mouse_Sex, y = total_tissue_volume, group=Mouse_Sex, colour=Mouse_Sex, fill=Mouse_Sex)) + 
+geom_flat_violin(position = position_nudge(x = .1, y = 0), alpha =.4,adjust =0.8)+
+  geom_boxplot(width = .1, outlier.shape = NA,alpha = .5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(side = "l",range_scale = .4,alpha = .3) +
+  #Adjust theme
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  theme_classic()+
+  labs(
+    y="Total Tissue Volume (Z-scored)",
+    fill="Mouse_Sex")+  theme(text = element_text(size = 14))+ylim(-4, 4)+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(Total ~ Tissue ~ Volume~ (mm^3)), ~ (. * sigma_ttv) + mu_ttv), 
+    name="Total Tissue Volume (Z-scored)", limits=c(-4,4)) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+
+pdf(file = "/Users/gumae2/Documents/Cross_species_sex_differences/Figures/total_tissue_volume/mouse_ttv_split_by_grp_c57_ComBat.pdf",   # The directory you want to save the file in
+    width = 8.5, # The width of the plot in inches
+    height = 4.5) # The height of the plot in inches
+ggplot(df_data_no_outliers_combat, aes(x = Mouse_Sex , y = total_tissue_volume, group=Mouse_Sex, colour=Study_Name)) + 
+  geom_boxplot(width = .5, outlier.shape = NA,alpha = .5) +
+  geom_point() +geom_jitter(width = 0.25)+
+  facet_grid(~Background) +
+  ## add justified jitter from the {gghalves} package
+  theme_classic()+
+  labs(
+    y="Total Tissue Volume (Z-scored)",
+    fill="Mouse_Sex")+  theme(text = element_text(size = 14))+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(Total ~ Tissue ~ Volume~ (mm^3)), ~ (. * sigma_ttv) + mu_ttv), 
+    name="Total Tissue Volume (Z-scored)", limits=c(-4,4)) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+
+# Look at Background Strain separately
+ggplot(df_zscored_data_combat, aes(x = Mouse_Sex , y = total_tissue_volume, group=Mouse_Sex, colour=Mouse_Sex)) + 
+  geom_boxplot(width = .5, outlier.shape = NA,alpha = .5) +
+  geom_point() +geom_jitter(width = 0.25)+
+  facet_grid(~Background) +
+  ## add justified jitter from the {gghalves} package
+  theme_classic()+
+  labs(
+    y="Total Tissue Volume (Z-scored)",
+    fill="Mouse_Sex")+  theme(text = element_text(size = 14))+ylim(-4, 4)+
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(Total ~ Tissue ~ Volume~ (mm^3)), ~ (. * sigma_ttv) + mu_ttv), 
+    name="Total Tissue Volume (Z-scored)", limits=c(-4,4)) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+
+## Prune white matter and ventricles out of tree to look at sex differences
+```{r}
+#Clone the tree so that any changes you make do not affect your original tree
+hdefs_GM_WM <- Clone(hdefs_tree)
+df_volumes_GMWM <- hdefs_GM_WM$Get("volumes") %>% as_tibble
+
+pre_export_GMWM <- gf %>% dplyr::select(Mouse_ID, Is_Wildtype, POND_Mouse_ID, Background,
+                        Study_Name,Mouse_Sex, Mouse_Age, Timepoint, Treatment_Code, TBV, total_tissue_volume) %>%
+          bind_cols(df_volumes_GMWM) %>% distinct(Mouse_ID, .keep_all = TRUE) 
+
+export_GMWM1 <- pre_export_GMWM %>% 
+          mutate(Mouse_Age = str_remove(Mouse_Age,"P")) %>%
+          separate(Mouse_Age, c("a", "b"), fill = "right") %>%
+          mutate(a = as.numeric(a), b = as.numeric(b)) %>%
+          mutate(Mouse_Age = ifelse(is.na(b) == FALSE, (a + b)/2, 
+                                    a), .after = Mouse_Sex) %>%
+          dplyr::select(-c(a,b)) 
+#Replace NAs with age of 60
+export_GMWM1["Mouse_Age"][is.na(export_GMWM1["Mouse_Age"])] <- 60
+export_GMWM <- export_GMWM1 %>% filter(Mouse_Age < 200)
+export_GMWM$AGE_cent <- export_GMWM$Mouse_Age - mean(export_GMWM$Mouse_Age)
+
+nLimit <- 4
+df_GMWM_1 <-  export_GMWM %>% filter(Is_Wildtype == "WT" & !duplicated(Mouse_ID) & Treatment_Code %in% c("none", "MOCK", "VEH", "Control", "Saline"))
+df_GMWM <- df_GMWM_1 %>%  
+  dplyr::group_by(Study_Name) %>% 
+  dplyr::summarize(nF=sum(Mouse_Sex == "F"),
+            nM=sum(Mouse_Sex == "M"),
+             n = n()) %>%
+  dplyr::filter(nF > nLimit & nM > nLimit)
+df_GMWM
+
+df_GMWM <- df_GMWM_1 %>%filter (Study_Name %in% df_GMWM$Study_Name)
+
+# grab the distinct cohort names from the cohorts data 
+cohort_names <- unique(df_GMWM$Study_Name)
+
+## Subset the data so it's just C57BL6J and 6N
+df_just_C57BL6J_forGMWM <-df_GMWM %>% filter(Background == "C57BL-6J")
+df_just_C57BL6N_forGMWM <-df_GMWM %>% filter(Background %in% c("C57BL-6N", "C57BL6-N"))
+df_just_C57BL6N_forGMWM$Background <- gsub("C57BL6-N", "C57BL-6N", df_just_C57BL6N_forGMWM$Background)
+
+# Apply ComBat to each background strain
+# C57BL6J
+mouse_GMWM_C57BL6J_t <- t(as.matrix(df_just_C57BL6J_forGMWM[,10:601]))
+mouse_GMWM_demo_C57BL6J <- df_just_C57BL6J_forGMWM[,c(1:9,602)]
+
+cohort_batch_C57BL6J_forGMWM <- df_just_C57BL6J_forGMWM$Study_Name
+combat_vols_cohort_C57BL6J_forGMWM <- sva::ComBat(dat = mouse_GMWM_C57BL6J_t, batch = cohort_batch_C57BL6J_forGMWM)
+
+combat_vols_C57BL6J_GMWM_reoriented <- t(combat_vols_cohort_C57BL6J_forGMWM)
+df_combat_C57BL6J_vols_GMWM <- mouse_GMWM_demo_C57BL6J %>%  cbind(combat_vols_C57BL6J_GMWM_reoriented) %>% as.data.frame()
+
+# C57BL6N
+mouse_GMWM_C57BL6N_t <- t(as.matrix(df_just_C57BL6N_forGMWM[,10:601]))
+mouse_GMWM_demo_C57BL6N <- df_just_C57BL6N_forGMWM[,c(1:9,602)]
+
+cohort_batch_C57BL6N_forGMWM <- df_just_C57BL6N_forGMWM$Study_Name
+combat_vols_cohort_C57BL6N_forGMWM <- sva::ComBat(dat = mouse_GMWM_C57BL6N_t, batch = cohort_batch_C57BL6N_forGMWM)
+
+combat_vols_C57BL6N_GMWM_reoriented <- t(combat_vols_cohort_C57BL6N_forGMWM)
+df_combat_C57BL6N_vols_GMWM <- mouse_GMWM_demo_C57BL6N %>%  cbind(combat_vols_C57BL6N_GMWM_reoriented) %>% as.data.frame()
+df_combat_vols_GMWM <- rbind(df_combat_C57BL6J_vols_GMWM, df_combat_C57BL6N_vols_GMWM)
+
+mouse_vols_GMWM_combat <- df_combat_vols_GMWM[,12:ncol(df_combat_vols_GMWM)] %>% as.matrix()
+mouse_demo_GMWM_combat <- df_combat_vols_GMWM[,c(1:11)]
+
+zscores_volumes_combat_GMWM <- matrix(0, nrow = nrow(mouse_vols_GMWM_combat), ncol = ncol(mouse_vols_GMWM_combat))
+for(j in 1:ncol(mouse_vols_GMWM_combat)){
+  mu <- mean(mouse_vols_GMWM_combat[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_vols_GMWM_combat[,j]) #And standard deviations
+  zscores_volumes_combat_GMWM[,j] <- (mouse_vols_GMWM_combat[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscores_volumes_combat_GMWM)<-colnames(mouse_vols_GMWM_combat)
+df_zscores_volumes_combat_GMWM <- mouse_demo_GMWM_combat %>%  cbind(zscores_volumes_combat_GMWM) %>% as.data.frame()
+```
+
+## Calculate model outputs to plot adjusted volumes
+```{r}
+model_inputs_mouse <- df_zscores_volumes_combat_GMWM %>% 
+  summarize(
+    AGE_cent = mean(AGE_cent),
+    total_tissue_volume = mean(total_tissue_volume))
+model_inputs_mouse %>% as.data.frame()
+model_inputs_mouse[2,] <- model_inputs_mouse[1,]
+model_inputs_mouse$Mouse_Sex = c("F", "M")
+```
+
+## Plot White matter Raw
+```{r}
+mu_wm <- mean(df_combat_vols_GMWM$`fiber tracts`)
+sd_wm <- sd(df_combat_vols_GMWM$`fiber tracts`)
+
+ggplot(df_zscores_volumes_combat_GMWM, aes(x = Mouse_Sex, y = `fiber tracts`, group=Mouse_Sex, colour=Mouse_Sex, fill=Mouse_Sex)) + 
+geom_flat_violin(
+    position = position_nudge(x = .1, y = 0), 
+    alpha =.4,adjust =0.8)+
+  geom_boxplot(width = .1, outlier.shape = NA,alpha = .5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(side = "l", range_scale = .4, alpha = .3) +
+  #Adjust theme
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  theme_classic()+
+  labs(y="White Matter Volume (Z-scored)",
+    fill="Mouse_Sex")+  theme(text = element_text(size = 14))+ylim(-4, 4)+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(White ~ Matter ~ Volume~ (mm^3)), ~ (. * sd_wm) + mu_wm), 
+    name="White Matter Volume (Z-scored)", limits=c(-4,4)) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+## White Matter Adjusted
+```{r}
+linearmodel <- lm(`fiber tracts` ~ Mouse_Sex+ total_tissue_volume + AGE_cent, data=df_zscores_volumes_combat_GMWM)
+summary(linearmodel)
+
+## estimate the residulized ROI volume for females (1) and males (2)
+wm_estimates <- predict.lm(linearmodel,model_inputs_mouse)
+
+residualized_wm_vol <- residuals(lm(`fiber tracts` ~ total_tissue_volume + AGE_cent + Background, data=df_zscores_volumes_combat_GMWM))
+resid_wm<- cbind(df_zscores_volumes_combat_GMWM,residualized_wm_vol)
+summary(lm(residualized_wm_vol ~ Mouse_Sex , data=resid_wm))
+
+resid_wm_females  <- resid_wm %>% filter(Mouse_Sex %in% c("F"))
+resid_wm_females$adjusted_wm_resid <- resid_wm_females$residualized_wm_vol + wm_estimates[1]
+
+resid_wm_males  <- resid_wm %>% filter(Mouse_Sex %in% c("M"))
+resid_wm_males$adjusted_wm_resid <- resid_wm_males$residualized_wm_vol + wm_estimates[2]
+
+resid_wm_adjusted <- rbind(resid_wm_females, resid_wm_males)
+```
+### Plot White matter adjusted
+```{r}
+ggplot(resid_wm_adjusted, aes(x = Mouse_Sex, y = adjusted_wm_resid, group=Mouse_Sex, colour=Mouse_Sex, fill=Mouse_Sex)) + 
+geom_flat_violin(
+    position = position_nudge(x = .1, y = 0), 
+    alpha =.4,adjust =0.8)+
+  geom_boxplot(width = .1, outlier.shape = NA,
+     alpha = .5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(side = "l", range_scale = .4, alpha = .3) +
+  #Adjust theme
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  theme_classic()+
+  labs(y="White Matter Volume (residualized)",
+    fill="Mouse_Sex")+  theme(text = element_text(size = 14))+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(White ~ Matter ~ Volume~ (mm^3)), ~ (. * sd_wm) + mu_wm), 
+    name="White Matter Volume (residualized)") +
+   coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+
+## Plot Total Gray Matter Raw
+```{r}
+mu_gm <- mean(df_combat_vols_GMWM$`Basic cell groups and regions`)
+sd_gm <- sd(df_combat_vols_GMWM$`Basic cell groups and regions`)
+
+ggplot(df_zscores_volumes_combat_GMWM, aes(x = Mouse_Sex, y = `Basic cell groups and regions`, group=Mouse_Sex, colour=Mouse_Sex, fill=Mouse_Sex)) + 
+geom_flat_violin(
+    position = position_nudge(x = .1, y = 0), 
+    alpha =.4,adjust =0.8)+
+  geom_boxplot(width = .1, outlier.shape = NA,alpha = .5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(side = "l", range_scale = .4, alpha = .3) +
+  #Adjust theme
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  theme_classic()+
+  labs(
+    y="Grey Matter Volume (Z-scored)",
+    fill="Mouse_Sex")+  theme(text = element_text(size = 14))+ylim(-4, 4)+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(Grey ~ Matter ~ Volume~ (mm^3)), ~ (. * sd_wm) + mu_wm), 
+    name="Grey Matter Volume (Z-scored)", limits=c(-4,4)) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+
+## Grey Matter Adjusted
+```{r}
+linearmodel <- lm(`Basic cell groups and regions` ~ Mouse_Sex+ total_tissue_volume + AGE_cent, data=df_zscores_volumes_combat_GMWM)
+summary(linearmodel)
+
+## estimate the residulized ROI volume for females (1) and males (2)
+gm_estimates <- predict.lm(linearmodel,model_inputs_mouse)
+
+residualized_gm_vol <- residuals(lm(`Basic cell groups and regions` ~ total_tissue_volume + AGE_cent, data=df_zscores_volumes_combat_GMWM))
+resid_gm<- cbind(df_zscores_volumes_combat_GMWM,residualized_gm_vol)
+summary(lm(residualized_gm_vol ~ Mouse_Sex , data=resid_gm))
+
+resid_gm_females  <- resid_gm %>% filter(Mouse_Sex %in% c("F"))
+resid_gm_females$adjusted_gm_resid <- resid_gm_females$residualized_gm_vol + gm_estimates[1]
+
+resid_gm_males  <- resid_gm %>% filter(Mouse_Sex %in% c("M"))
+resid_gm_males$adjusted_gm_resid <- resid_gm_males$residualized_gm_vol + gm_estimates[2]
+
+resid_gm_adjusted <- rbind(resid_gm_females, resid_gm_males)
+```
+### Plot grey matter adjusted
+```{r}
+ggplot(resid_gm_adjusted, aes(x = Mouse_Sex, y = adjusted_gm_resid, group=Mouse_Sex, colour=Mouse_Sex, fill=Mouse_Sex)) + 
+geom_flat_violin(
+    position = position_nudge(x = .1, y = 0), 
+    alpha =.4,adjust =0.8)+
+  geom_boxplot(width = .1, outlier.shape = NA,
+     alpha = .5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(side = "l", range_scale = .4, alpha = .3) +
+  #Adjust theme
+  scale_fill_manual(values=c("deepskyblue", "goldenrod1"))+ 
+  scale_color_manual(values = c("deepskyblue", "goldenrod1"))+
+  theme_classic()+
+  labs(y="Grey Matter Volume (residualized)",
+    fill="Mouse_Sex")+  theme(text = element_text(size = 14))+
+  scale_y_continuous(
+    sec.axis = sec_axis(name=expression(Grey ~ Matter ~ Volume~ (mm^3)), ~ (. * sd_gm) + mu_gm), 
+    name="Grey Matter Volume (residualized)") +
+   coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+
+# Run a linear model across all regions (ComBat harmonized volumes)
+```{r}
+sexdiff_full_lm_combat <- anatLm(~ Mouse_Sex+Background+ AGE_cent + total_tissue_volume, df_zscored_data_combat, df_zscored_data_combat[,13:ncol(df_zscored_data_combat)])
+FDR_sexdiff_full_lm_combat <- anatFDR(sexdiff_full_lm_combat)
+FDR_sexdiff_full_lm_combat
+```
+## Calculate t and p values
+```{r}
+dof <- 424
+tvals_sex <- abs(sexdiff_full_lm_combat[, 'tvalue-Mouse_SexM'])
+pvalsex <- 2*pt(q = tvals_sex, df = dof, lower.tail = FALSE) %>% as_tibble()
+
+tvals_ttv <- abs(sexdiff_full_lm_combat[, 'tvalue-total_tissue_volume'])
+pvalttv <- 2*pt(q = tvals_ttv, df = dof, lower.tail = FALSE) %>% as_tibble()
+
+tvals_age <- abs(sexdiff_full_lm_combat[, 'tvalue-AGE_cent'])
+pvalage <- 2*pt(q = tvals_age, df = dof, lower.tail = FALSE) %>% as_tibble()
+
+model_outputs_sex_wTTV_cobmat <- sexdiff_full_lm_combat %>% as.data.frame()
+model_outputs_sex_wTTV_cobmat$label <- rownames(sexdiff_full_lm_combat)
+model_outputs_sex_wTTV1_cobmat <- cbind(model_outputs_sex_wTTV_cobmat[c("label","F-statistic","R-squared","beta-(Intercept)","beta-Mouse_SexM","beta-AGE_cent",
+                                                          "beta-total_tissue_volume","tvalue-(Intercept)","tvalue-Mouse_SexM","tvalue-AGE_cent" , 
+                                                          "tvalue-total_tissue_volume")], 
+                                 pvalsex,pvalttv,pvalage,FDR_sexdiff_full_lm_combat[,c("qvalue-tvalue-Mouse_SexM","qvalue-tvalue-AGE_cent",
+                                 "qvalue-tvalue-total_tissue_volume")])
+
+colnames(model_outputs_sex_wTTV1_cobmat) <- c("label","F-statistic", "R-squared", "beta-(Intercept)", "beta-Mouse_SexM","beta-AGE_cent", "beta-total_tissue_volume", 
+                                       "tvalue-(Intercept)", "tvalue-Mouse_SexM", "tvalue-AGE_cent","tvalue-total_tissue_volume", 
+                                       "pvalsex","pvalttv","pvalage",
+                                       "qvalue-tvalue-Mouse_SexM","qvalue-tvalue-AGE_cent","qvalue-tvalue-total_tissue_volume")
+```
+
+### Plot results
+Threshold regions that are significant at 5% FDR (t=2.29) and 20% FDR (t=1.79) 
+```{r}
+## Threshold at p=0.05
+df_beta_sex_wTTV_combat <- model_outputs_sex_wTTV1_cobmat[c("label", "beta-Mouse_SexM")]
+df_tvalue_sex_wTTV_combat <- model_outputs_sex_wTTV1_cobmat[c("label", "tvalue-Mouse_SexM")]
+
+## 5% FDR
+sig_tvalue_sex_pos_wTBV_combat <- df_tvalue_sex_wTTV_combat$`tvalue-Mouse_SexM` > 2.19
+sig_tvalue_sex_neg_wTBV_combat <- df_tvalue_sex_wTTV_combat$`tvalue-Mouse_SexM` < -2.19
+sig_beta_sex_wTBV_combat <- df_beta_sex_wTTV_combat[sig_tvalue_sex_pos_wTBV_combat | sig_tvalue_sex_neg_wTBV_combat, ]
+
+sig_beta_sex_tree_combat<-left_join(df_beta_sex_wTTV_combat, sig_beta_sex_wTBV_combat, by = "label")
+filtered_sig_beta_sex_tree_combat <- subset(sig_beta_sex_tree_combat, select = c("label","beta-Mouse_SexM.y"))
+
+hdefsCopy$Do(function(node){
+  ind_5_combat <- which(filtered_sig_beta_sex_tree_combat$label == node$name)
+  node$Sex_beta_5FDR_combat <- filtered_sig_beta_sex_tree_combat$`beta-Mouse_SexM.y`[ind_5_combat]
+})
+
+## 20% FDR
+sig_tvalue_sex_pos20FDR_wTBV_combat <- df_tvalue_sex_wTTV_combat$`tvalue-Mouse_SexM` > 1.48
+sig_tvalue_sex_neg20FDR_wTBV_combat <- df_tvalue_sex_wTTV_combat$`tvalue-Mouse_SexM` < -1.48
+sig_beta_sex_20FDRwTBV_combat <- df_beta_sex_wTTV_combat[sig_tvalue_sex_pos20FDR_wTBV_combat | sig_tvalue_sex_neg20FDR_wTBV_combat, ]
+
+sig_beta_sex_20FDRwTBV_tree_combat<-left_join(df_beta_sex_wTTV_combat, sig_beta_sex_20FDRwTBV_combat, by = "label")
+filtered_sig_beta_sex_20FDRwTBV_tree_combat <- subset(sig_beta_sex_20FDRwTBV_tree_combat, select = c("label","beta-Mouse_SexM.y"))
+
+hdefsCopy$Do(function(node){
+  ind_20_combat <- which(filtered_sig_beta_sex_20FDRwTBV_tree_combat$label == node$name)
+  node$Sex_beta_20FDR_combat <- filtered_sig_beta_sex_20FDRwTBV_tree_combat$`beta-Mouse_SexM.y`[ind_20_combat]
+})
+
+hdefsCopy$Do(function(node){
+  ind_nothr_combat <- which(df_beta_sex_wTTV_combat$label == node$name)
+  node$beta_sex_wTTV_combat <- df_beta_sex_wTTV_combat$`beta-Mouse_SexM`[ind_nothr_combat]
+})
+```
+
+
+### Thresholded maps at 5%, 20%, and no threshold
+```{r}
+## load in beta values from the tree
+sex_beta_wTBV_unthresholded_combat <- hanatToVolume(hdefsCopy, labelVol, "beta_sex_wTTV_combat")
+sex_beta_wTBV_FDR05_combat <- hanatToVolume(hdefsCopy, labelVol, "Sex_beta_5FDR_combat") #turn the t-value back into a volume file
+sex_beta_wTBV_FDR20_combat <- hanatToVolume(hdefsCopy, labelVol, "Sex_beta_20FDR_combat") #turn the t-value back into a volume file
+
+#plot with no, 20% FDR, and 5%FDR thresholds
+sliceSeries(nrow=6, ncol=2, begin=70, end=350) %>%
+  anatomy(anatVol, low=700, high=1400) %>%
+  overlay(sex_beta_wTBV_unthresholded_combat, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("Unthresholded") %>% 
+  sliceSeries() %>% anatomy() %>%
+  overlay(sex_beta_wTBV_FDR20_combat, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("20% FDR") %>% 
+  sliceSeries() %>% anatomy() %>%
+  overlay(sex_beta_wTBV_FDR05_combat, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("5% FDR") %>% 
+  legend("Standardized Effect Size (TTV corrected)") %>% 
+  draw()
+
+#plot with 5%FDR thresholds
+sliceSeries(nrow=8, ncol=1, begin=70, end=350) %>%
+  anatomy(anatVol, low=700, high=1400) %>%
+  overlay(sex_beta_wTBV_unthresholded_combat, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("Unthresholded") %>% 
+  sliceSeries() %>% anatomy() %>%
+  overlay(sex_beta_wTBV_FDR05_combat, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("5% FDR") %>% 
+  legend("Standardized Effect Size (TTV corrected)") %>% 
+  draw()
+```
+ 
+## Density plot of beta values with TBV
+```{r}
+##With TBV
+## select the columns of interest
+df_mouse_results_wTBV <- model_outputs_sex_wTTV1_cobmat %>% dplyr::select(c(`label`, `beta-Mouse_SexM`))
+## stack the columns containing the beta values for plotting
+df_mouse_results_wTBV$Sexbias <- df_mouse_results_wTBV$`beta-Mouse_SexM` 
+df_mouse_results_wTBV_1 <- df_mouse_results_wTBV %>% mutate(Sexbias = if_else(`Sexbias` > 0, "Male-bias", "Female-bias"))
+
+## plot
+ggplot(df_mouse_results_wTBV_1, aes(x=`beta-Mouse_SexM`, fill=`Sexbias`, color=`Sexbias`)) +
+    geom_histogram(alpha=.4, binwidth = 0.05) +
+    scale_fill_manual(values=c("Female-bias"="deepskyblue","Male-bias"="goldenrod1"))+
+    scale_colour_manual(values=c("Female-bias"="deepskyblue","Male-bias"="goldenrod1"))+
+    theme_classic()+ xlab("Standardized Effect Size (TTV corrected)")+ylab("Density")+
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 20)) +
+   theme(text = element_text(size = 14))+xlim(-1.5,1.5)+
+    geom_vline(xintercept=c(0)) 
+
+summary_table <- df_mouse_results_wTBV_1 %>% 
+  dplyr::group_by(Sexbias) %>% 
+  dplyr::summarize(
+    mean_beta = mean(`beta-Mouse_SexM`),
+    median_beta=median(`beta-Mouse_SexM`),
+    sd_beta=sd(`beta-Mouse_SexM`),
+    range_beta=range(`beta-Mouse_SexM`),
+    n = n()
+  )
+summary_table
+
+result = leveneTest(`beta-Mouse_SexM` ~ Sexbias, df_mouse_results_wTBV_1)
+print(result)
+```
+
+#No TTV
+## Lm for ComBat corrected vols
+```{r}
+sexdiff_full_lm_combat_noTTV <- anatLm(~ Mouse_Sex+Background+ AGE_cent, df_zscored_data_combat, df_zscored_data_combat[,13:ncol(df_zscored_data_combat)])
+FDR_sexdiff_full_lm_combat_noTTV <- anatFDR(sexdiff_full_lm_combat_noTTV)
+FDR_sexdiff_full_lm_combat_noTTV
+```
+
+### Plot results t-values for Background
+Threshold regions that are significant at 5% FDR (t=2.49) and 20% FDR
+```{r}
+model_outputs_sexdiff_full_lm_combat_noTTV <- sexdiff_full_lm_combat_noTTV %>% as.data.frame()
+model_outputs_sexdiff_full_lm_combat_noTTV$label <- rownames(sexdiff_full_lm_combat_noTTV)
+
+hdefsCopy$Do(function(node){
+  ind_background_noTTV <- which(model_outputs_sexdiff_full_lm_combat_noTTV$label == node$name)
+  node$background_noTTV <- model_outputs_sexdiff_full_lm_combat_noTTV$`tvalue-BackgroundC57BL-6N`[ind_background_noTTV]
+})
+t_value_background_noTTV <- hanatToVolume(hdefsCopy, labelVol, "background_noTTV")
+
+sliceSeries(nrow=6, ncol=2, begin=70, end=350) %>%
+  anatomy(anatVol, low=700, high=1400) %>%
+  overlay(t_value_background_noTTV, low=2.10, high=5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("Background Strain 5%FDR") %>% 
+  legend("T-value (not TTV corrected)") %>% 
+  draw()
+```
+
+### Plot results t-values
+Threshold regions that are significant at 5% FDR (t=2.49) and 20% FDR
+```{r}
+hdefsCopy$Do(function(node){
+  ind_sex_full_model_combat_noTTV <- which(model_outputs_sexdiff_full_lm_combat_noTTV$label == node$name)
+  node$sex_full_model_combat_noTTV <- model_outputs_sexdiff_full_lm_combat_noTTV$`tvalue-Mouse_SexM`[ind_sex_full_model_combat_noTTV]
+})
+t_value_sex_full_model_combat_noTTV <- hanatToVolume(hdefsCopy, labelVol, "sex_full_model_combat_noTTV")
+
+sliceSeries(nrow=6, ncol=2, begin=70, end=350) %>%
+  anatomy(anatVol, low=700, high=1400) %>%
+  overlay(t_value_sex_full_model_combat_noTTV, low=2.34, high=5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("Sex 5%FDR") %>% 
+  legend("T-value (not TTV corrected)") %>% 
+  draw()
+```
+
+
+
+```{r}
+dof <- 424
+tvals_sex_noTTV <- abs(sexdiff_full_lm_combat_noTTV[, 'tvalue-Mouse_SexM'])
+pvalsex_noTTV <- 2*pt(q = tvals_sex, df = dof, lower.tail = FALSE) %>% as_tibble()
+
+tvals_age_noTTV <- abs(sexdiff_full_lm_combat_noTTV[, 'tvalue-AGE_cent'])
+pvalage_noTTV <- 2*pt(q = tvals_age, df = dof, lower.tail = FALSE) %>% as_tibble()
+
+model_outputs_sex_wTTV_cobmat_noTTV <- sexdiff_full_lm_combat_noTTV %>% as.data.frame()
+model_outputs_sex_wTTV_cobmat_noTTV$label <- rownames(sexdiff_full_lm_combat_noTTV)
+model_outputs_sex_wTTV1_cobmat_noTTV <- cbind(model_outputs_sex_wTTV_cobmat_noTTV[c("label","F-statistic","R-squared","beta-(Intercept)","beta-Mouse_SexM","beta-AGE_cent",
+                                                          "tvalue-(Intercept)","tvalue-Mouse_SexM","tvalue-AGE_cent")], 
+                                 pvalsex_noTTV,pvalage_noTTV,FDR_sexdiff_full_lm_combat_noTTV[,c("qvalue-tvalue-Mouse_SexM","qvalue-tvalue-AGE_cent")])
+
+colnames(model_outputs_sex_wTTV1_cobmat_noTTV) <- c("label","F-statistic", "R-squared", "beta-(Intercept)", "beta-Mouse_SexM","beta-AGE_cent",  
+                                       "tvalue-(Intercept)", "tvalue-Mouse_SexM", "tvalue-AGE_cent",
+                                       "pvalsex","pvalage","qvalue-tvalue-Mouse_SexM","qvalue-tvalue-AGE_cent")
+```
+
+### Plot results
+Threshold regions that are significant at 5% FDR (t=2.29) and 20% FDR (t=1.79) 
+```{r}
+## Threshold at p=0.05
+df_beta_sex_wTTV_combat_noTTV <- model_outputs_sex_wTTV1_cobmat_noTTV[c("label", "beta-Mouse_SexM")]
+df_tvalue_sex_wTTV_combat_noTTV <- model_outputs_sex_wTTV1_cobmat_noTTV[c("label", "tvalue-Mouse_SexM")]
+
+## 5% FDR
+sig_tvalue_sex_pos_wTBV_combat_noTTV <- df_tvalue_sex_wTTV_combat_noTTV$`tvalue-Mouse_SexM` > 2.32
+sig_tvalue_sex_neg_wTBV_combat_noTTV <- df_tvalue_sex_wTTV_combat_noTTV$`tvalue-Mouse_SexM` < -2.32
+sig_beta_sex_wTBV_combat_noTTV <- df_beta_sex_wTTV_combat_noTTV[sig_tvalue_sex_pos_wTBV_combat_noTTV | sig_tvalue_sex_neg_wTBV_combat_noTTV, ]
+
+sig_beta_sex_tree_combat_noTTV<-left_join(df_beta_sex_wTTV_combat_noTTV, sig_beta_sex_wTBV_combat_noTTV, by = "label")
+filtered_sig_beta_sex_tree_combat_noTTV <- subset(sig_beta_sex_tree_combat_noTTV, select = c("label","beta-Mouse_SexM.y"))
+
+hdefsCopy$Do(function(node){
+  ind_5_combat_noTTV <- which(filtered_sig_beta_sex_tree_combat_noTTV$label == node$name)
+  node$Sex_beta_5FDR_combat_noTTV <- filtered_sig_beta_sex_tree_combat_noTTV$`beta-Mouse_SexM.y`[ind_5_combat_noTTV]
+})
+
+## 20% FDR
+sig_tvalue_sex_pos20FDR_wTBV_combat_noTTV <- df_tvalue_sex_wTTV_combat_noTTV$`tvalue-Mouse_SexM` > 1.55
+sig_tvalue_sex_neg20FDR_wTBV_combat_noTTV <- df_tvalue_sex_wTTV_combat_noTTV$`tvalue-Mouse_SexM` < -1.55
+sig_beta_sex_20FDRwTBV_combat_noTTV <- df_beta_sex_wTTV_combat_noTTV[sig_tvalue_sex_pos20FDR_wTBV_combat_noTTV | sig_tvalue_sex_neg20FDR_wTBV_combat_noTTV, ]
+
+sig_beta_sex_20FDRwTBV_tree_combat_noTTV<-left_join(df_beta_sex_wTTV_combat_noTTV, sig_beta_sex_20FDRwTBV_combat_noTTV, by = "label")
+filtered_sig_beta_sex_20FDRwTBV_tree_combat_noTTV <- subset(sig_beta_sex_20FDRwTBV_tree_combat_noTTV, select = c("label","beta-Mouse_SexM.y"))
+
+hdefsCopy$Do(function(node){
+  ind_20_combat_noTTV <- which(filtered_sig_beta_sex_20FDRwTBV_tree_combat_noTTV$label == node$name)
+  node$Sex_beta_20FDR_combat_noTTV <- filtered_sig_beta_sex_20FDRwTBV_tree_combat_noTTV$`beta-Mouse_SexM.y`[ind_20_combat_noTTV]
+})
+
+hdefsCopy$Do(function(node){
+  ind_nothr_combat_noTTV <- which(df_beta_sex_wTTV_combat_noTTV$label == node$name)
+  node$beta_sex_wTTV_combat_noTTV <- df_beta_sex_wTTV_combat_noTTV$`beta-Mouse_SexM`[ind_nothr_combat_noTTV]
+})
+```
+
+
+### Thresholded maps at 5%, 20%, and no threshold
+```{r}
+## load in beta values from the tree
+sex_beta_wTBV_unthresholded_combat_noTTV <- hanatToVolume(hdefsCopy, labelVol, "beta_sex_wTTV_combat_noTTV")
+sex_beta_wTBV_FDR05_combat_noTTV <- hanatToVolume(hdefsCopy, labelVol, "Sex_beta_5FDR_combat_noTTV") #turn the t-value back into a volume file
+sex_beta_wTBV_FDR20_combat_noTTV <- hanatToVolume(hdefsCopy, labelVol, "Sex_beta_20FDR_combat_noTTV") #turn the t-value back into a volume file
+
+sliceSeries(nrow=6, ncol=2, begin=70, end=350) %>%
+  anatomy(anatVol, low=700, high=1400) %>%
+  overlay(sex_beta_wTBV_unthresholded_combat_noTTV, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("Unthresholded") %>% 
+  sliceSeries() %>% anatomy() %>%
+  overlay(sex_beta_wTBV_FDR20_combat_noTTV, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("20% FDR") %>% 
+  sliceSeries() %>% anatomy() %>%
+  overlay(sex_beta_wTBV_FDR05_combat_noTTV, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("5% FDR") %>% 
+  legend("Standardized Effect Size (not TTV corrected)") %>% 
+  draw()
+
+sliceSeries(nrow=8, ncol=1, begin=70, end=350) %>%
+  anatomy(anatVol, low=700, high=1400) %>%
+  overlay(sex_beta_wTBV_unthresholded_combat_noTTV, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("Unthresholded") %>% 
+  sliceSeries() %>% anatomy() %>%
+  overlay(sex_beta_wTBV_FDR05_combat_noTTV, low=0, high=1.5, col = positive_cols(), rCol=negative_cols(), symmetric = T) %>% addtitle("5% FDR") %>% 
+  legend("Standardized Effect Size (not TTV corrected)") %>% 
+  draw()
+```
+
+
+## Density plot of beta values without TBV
+```{r}
+## select the columns of interest
+df_mouse_results_wTBV_noTTV <- model_outputs_sexdiff_full_lm_combat_noTTV %>% dplyr::select(c(`label`, `beta-Mouse_SexM`))
+## stack the columns containing the beta values for plotting
+df_mouse_results_wTBV_noTTV$Sexbias <- df_mouse_results_wTBV_noTTV$`beta-Mouse_SexM` 
+df_mouse_results_wTBV_1_noTTV <- df_mouse_results_wTBV_noTTV %>% mutate(Sexbias = if_else(`Sexbias` > 0, "Male-bias", "Female-bias"))
+## plot
+ggplot(df_mouse_results_wTBV_1_noTTV, aes(x=`beta-Mouse_SexM`, fill=`Sexbias`, color=`Sexbias`)) +
+    geom_histogram(alpha=.4, binwidth = 0.05) +
+    scale_fill_manual(values=c("Female-bias"="deepskyblue","Male-bias"="goldenrod1"))+
+    scale_colour_manual(values=c("Female-bias"="deepskyblue","Male-bias"="goldenrod1"))+
+    theme_classic()+ xlab("Standardized Effect Size (TTV corrected)")+ylab("Density")+
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 20)) +
+   theme(text = element_text(size = 14))+xlim(-1.5,1.5)+
+    geom_vline(xintercept=c(0)) 
+
+summary_table_noTTV <- df_mouse_results_wTBV_1_noTTV %>% 
+  dplyr::group_by(Sexbias) %>% 
+  dplyr::summarize(
+    median_beta=median(`beta-Mouse_SexM`),
+    mean_beta = mean(`beta-Mouse_SexM`),
+    sd_beta=sd(`beta-Mouse_SexM`),
+    range_beta=range(`beta-Mouse_SexM`),
+    n = n()
+  )
+summary_table_noTTV
+```
+
+
+# Variance analyses
+Residulaize volumes & look at variance with TTV
+```{r}
+## Calculate residualized volumes for males
+df_just_males <-df_zscored_data_combat %>% filter(Mouse_Sex == "M")
+mouse_vols_males <- df_just_males[,13:ncol(df_just_males)] #Then subset the volumes for the control observations #vols from 54:461
+mouse_demo_males <- df_just_males[,1:12]
+
+residuals_mouse_males <- matrix(0, nrow = nrow(mouse_vols_males), ncol = ncol(mouse_vols_males))
+for(j in 1:ncol(mouse_vols_males)){
+  residuals_mouse_males[,j] <- residuals(lm(mouse_vols_males[,j] ~ Background + AGE_cent + total_tissue_volume, data=df_just_males))
+}
+### Assign column names and "rebind" demographics data
+colnames(residuals_mouse_males)<-colnames(mouse_vols_males)
+df_residuals_mouse_males <- mouse_demo_males %>% cbind(residuals_mouse_males)
+
+## Calculate residualized volumes for females
+df_just_females <-df_zscored_data_combat %>% filter(Mouse_Sex == "F")
+mouse_vols_females <- df_just_females[,13:ncol(df_just_females)] #Then subset the volumes for the control observations #vols from 54:461
+mouse_demo_females <- df_just_females[,1:12]
+
+residuals_mouse_females <- matrix(0, nrow = nrow(mouse_vols_females), ncol = ncol(mouse_vols_females))
+for(j in 1:ncol(mouse_vols_females)){
+  residuals_mouse_females[,j] <- residuals(lm(mouse_vols_females[,j] ~ Background + AGE_cent + total_tissue_volume, data=df_just_females))
+}
+### Assign column names and "rebind" demographics data
+colnames(residuals_mouse_females)<-colnames(mouse_vols_females)
+df_residuals_mouse_females <- mouse_demo_females %>% cbind(residuals_mouse_females)
+
+df_residuals_mouse <- rbind(df_residuals_mouse_males, df_residuals_mouse_females)
+residuals_mouse <- df_residuals_mouse[,13:ncol(df_residuals_mouse)]
+
+## Calculate variance
+variance_males_mouse <- matrix(0, nrow = 1, ncol = ncol(residuals_mouse_males))
+for(j in 1:ncol(residuals_mouse_males)){
+  variance_males_mouse[,j] <- var(residuals_mouse_males[,j]) #Then you can compute the ROI-wise averages
+}
+colnames(variance_males_mouse)<-colnames(residuals_mouse_males)
+
+variance_females_mouse <- matrix(0, nrow = 1, ncol = ncol(residuals_mouse_females))
+for(j in 1:ncol(residuals_mouse_females)){
+  variance_females_mouse[,j] <- var(residuals_mouse_females[,j]) #Then you can compute the ROI-wise averages
+}
+colnames(variance_females_mouse)<-colnames(residuals_mouse_females)
+
+variance_mouse <- t(rbind(variance_males_mouse, variance_females_mouse)) %>% as.data.frame()
+colnames(variance_mouse) <- c("male_variance", "female_variance")
+variance_mouse_1 <- variance_mouse %>% mutate(Sexbias = if_else(male_variance > female_variance, "Male-bias", "Female-bias"))
+variance_mouse_1$label <- rownames(variance_mouse_1)
+
+## Perform Levene's test across all regions
+Levene_test_pvalue <- matrix(NA, nrow = ncol(residuals_mouse), ncol= 1)
+Levene_test_fvalue <- matrix(NA, nrow = ncol(residuals_mouse), ncol= 1)
+
+for(i in 1:ncol(residuals_mouse)){
+    result <- leveneTest(residuals_mouse[,i] ~ Mouse_Sex, df_residuals_mouse)
+#store outputs of interest
+Levene_test_pvalue[i,] <- result[1,3] # extract Pr(>F)
+Levene_test_fvalue[i,] <- result[1,2] # extract F value
+}
+
+variance_analysis_mice<- cbind(Levene_test_fvalue, Levene_test_pvalue) %>% as.data.frame()
+variance_analysis_mice$label <- colnames(residuals_mouse)
+colnames(variance_analysis_mice) <- c("fvalue","pvalue","label")
+variance_analysis_mice$Hochberg <- p.adjust(variance_analysis_mice$pvalue,method = "hochberg")
+variance_analysis_mouse_1 <- left_join(variance_analysis_mice, variance_mouse_1, by="label")
+
+variance_analysis_mouse_2 <- read.csv("/Users/gumae2/Documents/Cross_species_sex_differences/Tables/Variance_analysis_mouse_2.csv")
+## p<0.05
+sig_positive_pvalues <- variance_analysis_mouse_2$pvalue < 0.049
+sig_positive_pvalues_levenes <- variance_analysis_mouse_2[sig_positive_pvalues, ]
+
+df_sig<-left_join(variance_analysis_mouse_2, sig_positive_pvalues_levenes, by = "label")
+filtered_df_sig <- subset(df_sig, select = c("label","sex.biased.pvalue.y"))
+
+hdefsCopy$Do(function(node){
+  ind_pvalue_levene <- which(filtered_df_sig$label == node$name)
+  node$Pvalue_levene <- filtered_df_sig$`sex.biased.pvalue.y`[ind_pvalue_levene]
+})
+
+pvalue_levenes <- hanatToVolume(hdefsCopy, labelVol, "Pvalue_levene")
+
+### Assign colour palette for positive and negative beta values 
+
+positive_cols_variance <- function() {
+  getOption("MRIcrotomeCol", colorRampPalette(c("purple","violet"))(255)) }
+negative_cols_variance <- function() {
+  getOption("MRIcrotomeCol", colorRampPalette(c("green","light yellow"))(255))
+}
+
+sliceSeries(nrow=6, ncol=2, begin=70, end=350) %>%
+  anatomy(anatVol, low=700, high=1400) %>%
+  overlay(pvalue_levenes, low=0, high=0.05, col = positive_cols_variance(), rCol= negative_cols_variance(), symmetric = T) %>% addtitle("p<0.05") %>% 
+  legend("p-value (Levene's)") %>% 
+  draw()
+```
+
+# Variance analyses (no TTV correction)
+Residulaize volumes & look at variance without TTV
+```{r}
+## Calculate residualized volumes for males
+df_just_males_noTTV <-df_zscored_data_combat %>% filter(Mouse_Sex == "M")
+mouse_vols_males_noTTV <- df_just_males_noTTV[,13:ncol(df_just_males_noTTV)] #Then subset the volumes for the control observations #vols from 54:461
+mouse_demo_males_noTTV <- df_just_males_noTTV[,1:12]
+
+residuals_mouse_males_noTTV <- matrix(0, nrow = nrow(mouse_vols_males_noTTV), ncol = ncol(mouse_vols_males_noTTV))
+for(j in 1:ncol(mouse_vols_males_noTTV)){
+  residuals_mouse_males_noTTV[,j] <- residuals(lm(mouse_vols_males_noTTV[,j] ~ Background + AGE_cent, data=df_just_males_noTTV))
+}
+### Assign column names and "rebind" demographics data
+colnames(residuals_mouse_males_noTTV)<-colnames(mouse_vols_males_noTTV)
+df_residuals_mouse_males_noTTV <- mouse_demo_males_noTTV %>% cbind(residuals_mouse_males_noTTV)
+
+## Calculate residualized volumes for females
+df_just_females_noTTV <-df_zscored_data_combat %>% filter(Mouse_Sex == "F")
+mouse_vols_females_noTTV <- df_just_females_noTTV[,13:ncol(df_just_females_noTTV)] #Then subset the volumes for the control observations #vols from 54:461
+mouse_demo_females_noTTV <- df_just_females_noTTV[,1:12]
+
+residuals_mouse_females_noTTV <- matrix(0, nrow = nrow(mouse_vols_females_noTTV), ncol = ncol(mouse_vols_females_noTTV))
+for(j in 1:ncol(mouse_vols_females_noTTV)){
+  residuals_mouse_females_noTTV[,j] <- residuals(lm(mouse_vols_females_noTTV[,j] ~ Background + AGE_cent, data=df_just_females_noTTV))
+}
+### Assign column names and "rebind" demographics data
+colnames(residuals_mouse_females_noTTV)<-colnames(mouse_vols_females_noTTV)
+df_residuals_mouse_females_noTTV <- mouse_demo_females_noTTV %>% cbind(residuals_mouse_females_noTTV)
+
+df_residuals_mouse_noTTV <- rbind(df_residuals_mouse_males_noTTV, df_residuals_mouse_females_noTTV)
+residuals_mouse_noTTV <- df_residuals_mouse_noTTV[,13:ncol(df_residuals_mouse_noTTV)]
+
+## Calculate variance
+variance_males_mouse_noTTV <- matrix(0, nrow = 1, ncol = ncol(residuals_mouse_males_noTTV))
+for(j in 1:ncol(residuals_mouse_males_noTTV)){
+  variance_males_mouse_noTTV[,j] <- var(residuals_mouse_males_noTTV[,j]) #Then you can compute the ROI-wise averages
+}
+colnames(variance_males_mouse_noTTV)<-colnames(residuals_mouse_males_noTTV)
+
+variance_females_mouse_noTTV <- matrix(0, nrow = 1, ncol = ncol(residuals_mouse_females_noTTV))
+for(j in 1:ncol(residuals_mouse_females_noTTV)){
+  variance_females_mouse_noTTV[,j] <- var(residuals_mouse_females_noTTV[,j]) #Then you can compute the ROI-wise averages
+}
+colnames(variance_females_mouse_noTTV)<-colnames(residuals_mouse_females_noTTV)
+
+variance_mouse_noTTV <- t(rbind(variance_males_mouse_noTTV, variance_females_mouse_noTTV)) %>% as.data.frame()
+colnames(variance_mouse_noTTV) <- c("male_variance", "female_variance")
+variance_mouse_1_noTTV <- variance_mouse_noTTV %>% mutate(Sexbias = if_else(male_variance > female_variance, "Male-bias", "Female-bias"))
+variance_mouse_1_noTTV$label <- rownames(variance_mouse_1_noTTV)
+
+## Perform Levene's test across all regions
+Levene_test_pvalue_noTTV <- matrix(NA, nrow = ncol(residuals_mouse_noTTV), ncol= 1)
+Levene_test_fvalue_noTTV <- matrix(NA, nrow = ncol(residuals_mouse_noTTV), ncol= 1)
+
+for(i in 1:ncol(residuals_mouse_noTTV)){
+    result_noTTV <- leveneTest(residuals_mouse_noTTV[,i] ~ Mouse_Sex, df_residuals_mouse_noTTV)
+#store outputs of interest
+Levene_test_pvalue_noTTV[i,] <- result_noTTV[1,3] # extract Pr(>F)
+Levene_test_fvalue_noTTV[i,] <- result_noTTV[1,2] # extract F value
+}
+
+variance_analysis_mice_noTTV<- cbind(Levene_test_fvalue_noTTV, Levene_test_pvalue_noTTV) %>% as.data.frame()
+variance_analysis_mice_noTTV$label <- colnames(residuals_mouse_noTTV)
+colnames(variance_analysis_mice_noTTV) <- c("fvalue","pvalue_noTTV","label")
+variance_analysis_mice_noTTV$Hochberg <- p.adjust(variance_analysis_mice_noTTV$pvalue_noTTV,method = "hochberg")
+variance_analysis_mouse_1_noTTV <- left_join(variance_analysis_mice_noTTV, variance_mouse_1_noTTV, by="label")
+
+variance_analysis_mouse_noTTV_2 <- read.csv("/Users/gumae2/Documents/Cross_species_sex_differences/Tables/Variance_analysis_mouse_noTTV_2.csv")
+
+## p<0.05
+sig_pvalues_noTTV <- variance_analysis_mouse_noTTV_2$pvalue_noTTV < 0.049
+sig_pvalues_levenes_noTTV <- variance_analysis_mouse_noTTV_2[sig_pvalues_noTTV, ] %>% as.data.frame()
+
+df_sig_noTTV <- left_join(variance_analysis_mice_noTTV, sig_pvalues_levenes_noTTV, by = "label")
+filtered_df_sig_noTTV <- subset(df_sig_noTTV, select = c("label","sex.biased.pvalue"))
+
+hdefsCopy$Do(function(node){
+  ind_pvalue_levene_noTTV <- which(filtered_df_sig_noTTV$label == node$name)
+  node$Pvalue_levene_noTTV <- filtered_df_sig_noTTV$`sex.biased.pvalue`[ind_pvalue_levene_noTTV]
+})
+
+pvalue_levenes_noTTV <- hanatToVolume(hdefsCopy, labelVol, "Pvalue_levene_noTTV")
+### Assign colour palette for positive and negative beta values 
+
+positive_cols_variance <- function() {
+  getOption("MRIcrotomeCol", colorRampPalette(c("purple","violet"))(255)) }
+negative_cols_variance <- function() {
+  getOption("MRIcrotomeCol", colorRampPalette(c("green","light yellow"))(255))
+}
+
+sliceSeries(nrow=6, ncol=2, begin=70, end=350) %>%
+  anatomy(anatVol, low=700, high=1400) %>%
+  overlay(pvalue_levenes_noTTV, low=0, high=0.05, col = positive_cols_variance(), rCol= negative_cols_variance(), symmetric = T) %>% addtitle("p<0.05") %>% 
+  legend("p-value (Levene's)") %>% 
+  draw()
+```
+
+
+
+
+
+
+
+
+

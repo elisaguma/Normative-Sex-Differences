@@ -1,0 +1,169 @@
+---
+title: "Mouse_expression_data_cleanup"
+author: "Elisa Guma"
+date: "5/17/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load in necessary librarie
+
+library(tidyverse)
+library(RMINC)
+library(magrittr)
+library(broom)
+library(data.tree)
+library(ggrepel)
+library(ggplot2)
+library(ggseg)
+library(cowplot)
+library(readr)
+library(sva)
+source('../input_data/tree_tools.R')
+```
+
+#Description
+This script is used to aggregate gene expression data from the Allen Mouse Brain Atlas
+into the homologous brain regions we define in this study, based on the DSURQE atlas
+
+#Load data
+```{r}
+mouse_expression_matrix <- as_tibble(data.table::fread("../input_data/raw_data_files/mouse_expression_matrix.csv", header = TRUE))
+```
+# Selection regions
+```{r}
+df_mouse_expression_matrix <- dplyr::filter(mouse_expression_matrix, Region %in% c("left Piriform cortex", "right Piriform cortex", 
+                                                                                   "left Subiculum","right Subiculum",
+                                                                                   "left Entorhinal area","right Entorhinal area",
+                                                                                   "left Field CA1","right Field CA1",
+                                                                                   "left Field CA3", "right Field CA3",
+                                                                                   "left Field CA2, stratum radiatum", "right Field CA2, stratum radiatum",
+                                                                                   "left Field CA2, stratum oriens", "right Field CA2, stratum oriens",
+                                                                                   "left Field CA2, pyramidal layer", "right Field CA2, pyramidal layer",
+                                                                                   "left Dentate gyrus, molecular layer","right Dentate gyrus, molecular layer",
+                                                                                   "left Hippocampus","right Hippocampus",
+                                                                                   "left Medial amygdalar nucleus", "right Medial amygdalar nucleus",
+                                                                                   "left Cortical subplate","right Cortical subplate",
+                                                                                   "left Anterior cingulate area","right Anterior cingulate area",
+                                                                                   "left Retrosplenial area","right Retrosplenial area",
+                                                                                   "left Primary auditory area","right Primary auditory area",
+                                                                                   "left Agranular insular area", "right Agranular insular area",
+                                                                                   "left Perirhinal area","right Perirhinal area",
+                                                                                   "left Primary motor area","right Primary motor area",
+                                                                                   "left Orbital area, ventrolateral part","right Orbital area, ventrolateral part",
+                                                                                   "left Primary somatosensory area","right Primary somatosensory area",
+                                                                                   "left Primary visual area","right Primary visual area",
+                                                                                   "left Temporal association areas","right Temporal association areas",
+                                                                                   "left Posterior parietal association areas","right Posterior parietal association areas",
+                                                                                   "left Pallidum, dorsal region","right Pallidum, dorsal region",
+                                                                                   "left Pallidum, caudal region","right Pallidum, caudal region",
+                                                                                   "left Pallidum, ventral region","right Pallidum, ventral region",
+                                                                                   "left Pallidum, medial region","right Pallidum, medial region",
+                                                                                   "left Bed nuclei of the stria terminalis","right Bed nuclei of the stria terminalis",
+                                                                                   "left Striatum ventral region","right Striatum ventral region",
+                                                                                   "left Caudoputamen","right Caudoputamen",
+                                                                                   "left Thalamus","right Thalamus",
+                                                                                   "left Medial preoptic nucleus","right Medial preoptic nucleus",
+                                                                                   "left Cerebellar cortex", "right Cerebellar cortex",
+                                                                                   "Midbrain", "Medulla", "Pons"))
+
+df_mouse_expression_matrix$Region <- gsub("left Field CA1", "left Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("right Field CA1", "right Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("left Field CA3", "left Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("right Field CA3", "right Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("left Field CA2, stratum radiatum", "left Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("right Field CA2, stratum radiatum", "right Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("left Field CA2, stratum oriens", "left Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("right Field CA2, stratum oriens", "right Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("left Field CA2, pyramidal layer", "left Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("right Field CA2, pyramidal layer", "right Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("left Dentate gyrus, molecular layer", "left Hippocampus", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("right Dentate gyrus, molecular layer", "right Hippocampus", df_mouse_expression_matrix$Region)
+
+df_mouse_expression_matrix$Region <- gsub("Pallidum, dorsal region", "Pallidum", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("Pallidum, caudal region", "Pallidum", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("Pallidum, ventral region", "Pallidum", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("Pallidum, medial region", "Pallidum", df_mouse_expression_matrix$Region)
+df_mouse_expression_matrix$Region <- gsub("Bed nuclei of the stria terminalis", "Pallidum", df_mouse_expression_matrix$Region)
+
+df_mouse_expression_matrix_agg <- df_mouse_expression_matrix %>% filter(!is.na(Region)) %>% group_by(Region) %>% summarise_all(mean)
+```
+
+## Aggregate hypothalamus separately
+```{r}
+df_mouse_expression_matrix_hypothal <- dplyr::filter(mouse_expression_matrix, Region %in% c("left Hypothalamus-other", "right Hypothalamus-other"))
+df_mouse_expression_matrix_hypothal_agg <- df_mouse_expression_matrix_hypothal %>% filter(!is.na(Region)) %>% group_by(Region) %>% summarise_all(mean)
+df_mouse_expression_matrix_hypothal_agg$Region <- gsub("Hypothalamus-other", "Hypothalamus", df_mouse_expression_matrix_hypothal_agg$Region)
+```
+
+## Aggregate BNST separately
+```{r}
+df_mouse_expression_matrix_bnst <- dplyr::filter(mouse_expression_matrix, Region %in% c("left Bed nuclei of the stria terminalis", "right Bed nuclei of the stria terminalis"))
+df_mouse_expression_matrix_bnst_agg <- df_mouse_expression_matrix_bnst %>% filter(!is.na(Region)) %>% group_by(Region) %>% summarise_all(mean)
+#df_mouse_expression_matrix_bnst_agg$Region <- gsub("Hypothalamus-other", "Hypothalamus", df_mouse_expression_matrix_hypothal_agg$Region)
+```
+
+## Aggregate hippocampus separately
+```{r}
+df_mouse_expression_matrix_hipp_subfields <- dplyr::filter(mouse_expression_matrix, Region %in% c("left Field CA1", "right Field CA1",
+                                                           "left Field CA3", "right Field CA3","left Dentate gyrus, molecular layer","right Dentate gyrus, molecular layer"))
+
+df_mouse_expression_matrix_hipp_subfields_agg <- df_mouse_expression_matrix_hipp_subfields %>% filter(!is.na(Region)) %>% group_by(Region) %>% summarise_all(mean)
+```
+
+## Rename regions
+```{r}
+df_mouse_expression_matrix_agg$Region <- gsub("Cortical subplate", "Amygdala", df_mouse_expression_matrix_agg$Region)
+df_mouse_expression_matrix_agg$Region <- gsub("Cortical subplate", "Amygdala", df_mouse_expression_matrix_agg$Region)
+df_mouse_expression_matrix_agg$Region <- gsub("Agranular insular area", "Agranular insula", df_mouse_expression_matrix_agg$Region)
+df_mouse_expression_matrix_agg$Region <- gsub("Orbital area, ventrolateral part", "Ventral orbital area", df_mouse_expression_matrix_agg$Region)
+df_mouse_expression_matrix_agg$Region <- gsub("Striatum ventral region", "Nucleus accumbens", df_mouse_expression_matrix_agg$Region)
+df_mouse_expression_matrix_agg$Region <- gsub("Pallidum", "Globus pallidus", df_mouse_expression_matrix_agg$Region)
+df_mouse_expression_matrix_agg$Region <- gsub("Striatum ventral region", "Nucleus accumbens", df_mouse_expression_matrix_agg$Region)
+```
+
+## Aggregate brainstem ROIs
+```{r}
+brainstem_ROIS <- df_mouse_expression_matrix_agg[1:3,2:ncol(df_mouse_expression_matrix_agg)] %>% as_tibble()
+row_sum <- colMeans(brainstem_ROIS[,1:ncol(brainstem_ROIS)]) 
+
+df_mouse_expression_matrix_aggregate <- rbind(df_mouse_expression_matrix_agg[,2:ncol(df_mouse_expression_matrix_agg)],row_sum)
+Region <- c(df_mouse_expression_matrix_agg$Region,"Brainstem")
+df_mouse_expression_matrix_aggregate1 <- cbind(Region,df_mouse_expression_matrix_aggregate) %>% as_tibble()
+```
+
+## Add hypothalamus and subfieldROIs
+```{r}
+df_mouse_expression_matrix_aggregate_hp_1 <- rbind(df_mouse_expression_matrix_aggregate1, df_mouse_expression_matrix_hypothal_agg)
+df_mouse_expression_matrix_aggregate_hp <- rbind(df_mouse_expression_matrix_aggregate_hp_1, df_mouse_expression_matrix_bnst_agg)
+df_mouse_expression_matrix_aggregate_final <- rbind(df_mouse_expression_matrix_aggregate_hp, df_mouse_expression_matrix_hipp_subfields_agg)
+```
+
+# Save data
+These outputs are available in the github folder
+```{r}
+#write.csv(df_mouse_expression_matrix_aggregate_final, "../input/gene_expression/aggregated_data/aggregated_mouse_gene_expression.csv")
+#saveRDS(df_mouse_expression_matrix_aggregate_final, "../input/gene_expression/aggregated_data/aggregated_mouse_gene_expression.RDS")
+```
+
+#filter by homologous genes
+```{r}
+homologous_genes <- read.csv("../input/gene_expression/raw_data_files/MouseHumanGeneHomologs.csv")
+homologous_genes$Mouse
+
+homologs <- homologous_genes$Mouse %>% as.character() 
+
+justgenes <- df_mouse_expression_matrix_aggregate_final[,2:ncol(df_mouse_expression_matrix_aggregate_final)]
+t_justgenes <- t(justgenes)
+rownames(t_justgenes) <- colnames(justgenes)
+colnames(t_justgenes) <- df_mouse_expression_matrix_aggregate_final$Region
+gene <- rownames(t_justgenes) %>% as.character()
+t_justgenes1 <- cbind (gene, t_justgenes) %>% as_tibble()
+
+t_genes_homologs<- subset(t_justgenes1, gene %in% homologs)
+
+#write.csv(t_genes_homologs, "../input/gene_expression/aggregated_data/transposed_homologous_mouse_genes.csv")
+#saveRDS(t_genes_homologs, "../input/gene_expression/aggregated_data/transposed_homologous_mouse_genes.RDS")
+```
+

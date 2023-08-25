@@ -1,0 +1,222 @@
+---
+title: "gene-enrichment"
+output: html_document
+date: "2023-06-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tmod))
+suppressPackageStartupMessages(library(clusterProfiler))
+```
+
+# Import gene sets
+
+```{r}
+# Path to gene set data
+annotation_file_remote_mouse <- 
+  paste0("http://download.baderlab.org/EM_Genesets/",
+         "current_release/Mouse/symbol/GO/MOUSE_GO_bp_no_GO_iea_symbol.gmt")
+
+#Output file
+annotation_file_local_mouse <- "/path_to/MOUSE_GO_bp_no_GO_iea_symbol.gmt"
+
+# Download it if it doesn't exist
+if (!file.exists(annotation_file_local_mouse)) {
+  download.file(annotation_file_remote_mouse, annotation_file_local_mouse)
+}
+
+# Load GMT file into a tmod object
+#mappings_mouse <- tmodImportMSigDB(file = annotation_file_local_mouse, format = "gmt")
+mappings_mouse <- read.gmt(annotation_file_local_mouse)
+homologous_genes_mouse <- read_csv('../input_data/gene_expression/MouseHumanGeneHomologs.csv', 
+                             show_col_types = FALSE) %>% 
+  pull(Mouse)
+```
+
+# Find mouse genes
+```{r}
+# Estrogen
+estrogen_related_terms_mouse <- filter(mappings_mouse, term %in% c("POSITIVE REGULATION OF INTRACELLULAR ESTROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0033148", 
+                                                       "REGULATION OF ESTROGEN SECRETION%GOBP%GO:2000861", "INTRACELLULAR ESTROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0030520",
+                                                       "ESTROGEN CATABOLIC PROCESS%GOBP%GO:0006711","NEGATIVE REGULATION OF INTRACELLULAR ESTROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:003314",
+                                                       "REGULATION OF INTRACELLULAR ESTROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0033146",
+                                                       "ESTROGEN BIOSYNTHETIC PROCESS%GOBP%GO:0006703", "POSITIVE REGULATION OF ESTROGEN SECRETION%GOBP%GO:2000863",
+                                                       "ESTROGEN METABOLIC PROCESS%GOBP%GO:0008210", "RESPONSE TO ESTROGEN%GOBP%GO:0043627", 
+                                                       "CELLULAR RESPONSE TO ESTROGEN STIMULUS%GOBP%GO:0071391"))
+# Androgen
+androgen_related_terms_mouse <- filter(mappings_mouse, term %in% c("POSITIVE REGULATION OF ANDROGEN RECEPTOR ACTIVITY%GOBP%GO:2000825",
+                                                       "NEGATIVE REGULATION OF ANDROGEN BIOSYNTHETIC PROCESS%GOBP%GO:2000180",
+                                                       "POSITIVE REGULATION OF ANDROGEN SECRETION%GOBP%GO:2000836", 
+                                                       "ACTIVATION OF PROSTATE INDUCTION BY ANDROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0060520",
+                                                       "ANDROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0030521",
+                                                       "REGULATION OF ANDROGEN SECRETION%GOBP%GO:2000834", "ANDROGEN BIOSYNTHETIC PROCESS%GOBP%GO:0006702",
+                                                       "ANDROGEN METABOLIC PROCESS%GOBP%GO:0008209",
+                                                       "REGULATION OF ANDROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0060765",
+                                                       "ANDROGEN CATABOLIC PROCESS%GOBP%GO:0006710",
+                                                       "NEGATIVE REGULATION OF ANDROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0060766"))
+# Progesterone
+progesterone_related_terms_mouse <- filter(mappings_mouse, term %in% c("POSITIVE REGULATION OF PROGESTERONE SECRETION%GOBP%GO:2000872",
+                                                           "REGULATION OF PROGESTERONE BIOSYNTHETIC PROCESS%GOBP%GO:2000182",
+                                                           "PROGESTERONE SECRETION%GOBP%GO:0042701",
+                                                           "PROGESTERONE METABOLIC PROCESS%GOBP%GO:0042448",
+                                                           "CELLULAR RESPONSE TO PROGESTERONE STIMULUS%GOBP%GO:0071393",
+                                                           "REGULATION OF PROGESTERONE SECRETION%GOBP%GO:2000870",
+                                                           "PROGESTERONE CATABOLIC PROCESS%GOBP%GO:0006709",
+                                                           "POSITIVE REGULATION OF PROGESTERONE BIOSYNTHETIC PROCESS%GOBP%GO:2000184",
+                                                           "PROGESTERONE RECEPTOR SIGNALING PATHWAY%GOBP%GO:0050847",
+                                                           "PROGESTERONE BIOSYNTHETIC PROCESS%GOBP%GO:0006701",
+                                                           "RESPONSE TO PROGESTERONE%GOBP%GO:0032570"))
+```
+
+#intersect with homolgous genes
+```{r}
+#Number of homologous genes in the module
+homologous_estrogen_related_terms_mouse <- homologous_genes_mouse %>% intersect(estrogen_related_terms_mouse$gene) %>% as.data.frame()
+homologous_estrogen_related_terms_mouse$term <- "estrogen"
+homologous_androgen_related_terms_mouse <- homologous_genes_mouse %>% intersect(androgen_related_terms_mouse$gene) %>% as.data.frame()
+homologous_androgen_related_terms_mouse$term <- "androgen"
+homologous_progesterone_related_terms_mouse <- homologous_genes_mouse %>% intersect(progesterone_related_terms_mouse$gene) %>% as.data.frame()
+homologous_progesterone_related_terms_mouse$term <- "progesterone"
+
+mouse_hormone_list <- bind_rows(homologous_estrogen_related_terms_mouse, 
+          homologous_androgen_related_terms_mouse, homologous_progesterone_related_terms_mouse)
+colnames(mouse_hormone_list) <- c("Mouse","term")
+
+male_mouse_hormone_list <- bind_rows(homologous_androgen_related_terms_mouse)
+colnames(male_mouse_hormone_list) <- c("Mouse","term")
+
+female_mouse_hormone_list <- bind_rows(homologous_estrogen_related_terms_mouse, homologous_progesterone_related_terms_mouse)
+colnames(female_mouse_hormone_list) <- c("Mouse","term")
+```
+
+# Human
+# Import gene sets
+
+```{r}
+# Path to gene set data
+annotation_file_remote_human <- 
+  paste0("http://download.baderlab.org/EM_Genesets/",
+         "current_release/Human/symbol/GO/Human_GO_bp_no_GO_iea_symbol.gmt")
+
+#Output file
+annotation_file_local_human <- "/path_to/Human_GO_bp_no_GO_iea_symbol.gmt"
+
+# Download it if it doesn't exist
+if (!file.exists(annotation_file_local_human)) {
+  download.file(annotation_file_remote_human, annotation_file_local_human)
+}
+
+# Load GMT file into a tmod object
+#mappings <- tmodImportMSigDB(file = annotation_file_local, format = "gmt")
+mappings_human <- read.gmt(annotation_file_local_human)
+homologous_genes_human <- read_csv('../input_data/gene_expression/MouseHumanGeneHomologs.csv', 
+                             show_col_types = FALSE) %>% 
+  pull(Human)
+```
+
+# Find human genes
+```{r}
+# Estrogen
+estrogen_related_terms_human <- filter(mappings_human, term %in% c("POSITIVE REGULATION OF INTRACELLULAR ESTROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0033148", 
+                                                       "REGULATION OF ESTROGEN SECRETION%GOBP%GO:2000861", "INTRACELLULAR ESTROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0030520",
+                                                       "ESTROGEN CATABOLIC PROCESS%GOBP%GO:0006711","NEGATIVE REGULATION OF INTRACELLULAR ESTROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:003314",
+                                                       "REGULATION OF INTRACELLULAR ESTROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0033146",
+                                                       "ESTROGEN BIOSYNTHETIC PROCESS%GOBP%GO:0006703", "POSITIVE REGULATION OF ESTROGEN SECRETION%GOBP%GO:2000863",
+                                                       "ESTROGEN METABOLIC PROCESS%GOBP%GO:0008210", "RESPONSE TO ESTROGEN%GOBP%GO:0043627", 
+                                                       "CELLULAR RESPONSE TO ESTROGEN STIMULUS%GOBP%GO:0071391"))
+
+# Androgen
+androgen_related_terms_human <- filter(mappings_human, term %in% c("POSITIVE REGULATION OF ANDROGEN RECEPTOR ACTIVITY%GOBP%GO:2000825",
+                                                       "NEGATIVE REGULATION OF ANDROGEN BIOSYNTHETIC PROCESS%GOBP%GO:2000180",
+                                                       "POSITIVE REGULATION OF ANDROGEN SECRETION%GOBP%GO:2000836", 
+                                                       "ACTIVATION OF PROSTATE INDUCTION BY ANDROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0060520",
+                                                       "ANDROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0030521",
+                                                       "REGULATION OF ANDROGEN SECRETION%GOBP%GO:2000834", "ANDROGEN BIOSYNTHETIC PROCESS%GOBP%GO:0006702",
+                                                       "ANDROGEN METABOLIC PROCESS%GOBP%GO:0008209",
+                                                       "REGULATION OF ANDROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0060765",
+                                                       "ANDROGEN CATABOLIC PROCESS%GOBP%GO:0006710",
+                                                       "NEGATIVE REGULATION OF ANDROGEN RECEPTOR SIGNALING PATHWAY%GOBP%GO:0060766"))
+
+# Progesterone
+progesterone_related_terms_human <- filter(mappings_human, term %in% c("POSITIVE REGULATION OF PROGESTERONE SECRETION%GOBP%GO:2000872",
+                                                           "REGULATION OF PROGESTERONE BIOSYNTHETIC PROCESS%GOBP%GO:2000182",
+                                                           "PROGESTERONE SECRETION%GOBP%GO:0042701",
+                                                           "PROGESTERONE METABOLIC PROCESS%GOBP%GO:0042448",
+                                                           "CELLULAR RESPONSE TO PROGESTERONE STIMULUS%GOBP%GO:0071393",
+                                                           "REGULATION OF PROGESTERONE SECRETION%GOBP%GO:2000870",
+                                                           "PROGESTERONE CATABOLIC PROCESS%GOBP%GO:0006709",
+                                                           "POSITIVE REGULATION OF PROGESTERONE BIOSYNTHETIC PROCESS%GOBP%GO:2000184",
+                                                           "PROGESTERONE RECEPTOR SIGNALING PATHWAY%GOBP%GO:0050847",
+                                                           "PROGESTERONE BIOSYNTHETIC PROCESS%GOBP%GO:0006701",
+                                                           "RESPONSE TO PROGESTERONE%GOBP%GO:0032570"))
+```
+
+
+```{r}
+#Number of homologous genes in the module
+homologous_estrogen_related_terms_human <- homologous_genes_human %>% intersect(estrogen_related_terms_human$gene)  %>% as.data.frame()
+homologous_estrogen_related_terms_human$term <- "estrogen"
+homologous_androgen_related_terms_human <- homologous_genes_human %>% intersect(androgen_related_terms_human$gene)  %>% as.data.frame()
+homologous_androgen_related_terms_human$term <- "androgen"
+homologous_progesterone_related_terms_human <- homologous_genes_human %>% intersect(progesterone_related_terms_human$gene)  %>% as.data.frame()
+homologous_progesterone_related_terms_human$term <- "progesterone"
+
+human_gene_list <- bind_rows(homologous_sex_related_terms_human, homologous_male_sex_related_terms_human, homologous_female_sex_related_terms_human,
+          homologous_x_inactivation_terms_human, homologous_estrogen_related_terms_human, 
+          homologous_androgen_related_terms_human, homologous_progesterone_related_terms_human)
+colnames(human_gene_list) <- c("Human","term")
+
+human_hormone_list <- bind_rows(homologous_estrogen_related_terms_human, 
+          homologous_androgen_related_terms_human, homologous_progesterone_related_terms_human)
+colnames(human_hormone_list) <- c("Human","term")
+
+male_human_hormone_list <- bind_rows(homologous_androgen_related_terms_human)
+colnames(male_human_hormone_list) <- c("Human","term")
+
+female_human_hormone_list <- bind_rows(homologous_estrogen_related_terms_human, homologous_progesterone_related_terms_human)
+colnames(female_human_hormone_list) <- c("Human","term")
+```
+
+#find matching homologous genes
+```{r}
+homologous_genes <- read.csv("../input_data/gene_expression/MouseHumanGeneHomologs_edited.csv")
+homologous_genes$Key %>% as.factor()
+homologous_genes$Mouse %>% as.factor()
+
+just_mouse_genes <- dplyr::select(mouse_hormone_list, "Mouse")  %>% as.data.frame()
+just_human_genes <- dplyr::select(human_hormone_list, "Human") %>% as.data.frame()
+
+homologous_genes_mouse <- left_join(just_mouse_genes, homologous_genes, by="Mouse") %>% dplyr::select("Mouse", "Key") 
+homologous_genes_human <- left_join(just_human_genes, homologous_genes, by="Human") %>% dplyr::select("Human", "Key") 
+homologous_gene_list <- merge(homologous_genes_mouse, homologous_genes_human, by ="Key")
+conjunction_genes_unique <-  homologous_gene_list %>% filter(!duplicated(Mouse) & !duplicated(Human))
+#write.csv(conjunction_genes_unique, "./input_data/gene_expression/sex_hormone_genes_short.csv")
+```
+
+## repeat for sex-specific lists
+```{r}
+just_male_mouse_genes <- dplyr::select(male_mouse_hormone_list, "Mouse")  %>% as.data.frame()
+just_male_human_genes <- dplyr::select(male_human_hormone_list, "Human") %>% as.data.frame()
+
+homologous_genes_mouse_male <- left_join(just_male_mouse_genes, homologous_genes, by="Mouse") %>% dplyr::select("Mouse", "Key") 
+homologous_genes_human_male <- left_join(just_male_human_genes, homologous_genes, by="Human") %>% dplyr::select("Human", "Key") 
+homologous_gene_list_male <- merge(homologous_genes_mouse_male, homologous_genes_human_male, by ="Key")
+conjunction_genes_male <-  homologous_gene_list_male %>% filter(!duplicated(Mouse) & !duplicated(Human))
+#write.csv(conjunction_genes_male, "../input_data/gene_expression/sex_hormone_genes_male_short.csv")
+
+just_female_mouse_genes <- dplyr::select(female_mouse_hormone_list, "Mouse")  %>% as.data.frame()
+just_female_human_genes <- dplyr::select(female_human_hormone_list, "Human") %>% as.data.frame()
+
+homologous_genes_mouse_female <- left_join(just_female_mouse_genes, homologous_genes, by="Mouse") %>% dplyr::select("Mouse", "Key") 
+homologous_genes_human_female <- left_join(just_female_human_genes, homologous_genes, by="Human") %>% dplyr::select("Human", "Key") 
+homologous_gene_list_female <- merge(homologous_genes_mouse_female, homologous_genes_human_female, by ="Key")
+conjunction_genes_female <-  homologous_gene_list_female %>% filter(!duplicated(Mouse) & !duplicated(Human))
+#write.csv(conjunction_genes_female, "../input_data/gene_expression/sex_hormone_genes_female_short.csv")
+```

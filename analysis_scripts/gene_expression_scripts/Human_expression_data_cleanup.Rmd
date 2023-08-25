@@ -1,0 +1,457 @@
+---
+title: "Human_expression_data_cleanup"
+author: "Elisa Guma"
+date: "5/17/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load in necessary librarie
+
+library(tidyverse)
+library(RMINC)
+library(magrittr)
+library(broom)
+library(data.tree)
+library(ggrepel)
+library(ggplot2)
+library(ggseg)
+library(ggsegGlasser)
+library(cowplot)
+library(readr)
+library(PupillometryR)
+library(lme4)
+library(lmerTest)
+library(sva)
+source('../input_data/tree_tools.R')
+```
+
+#Description
+This script is used to aggregate gene expression data from the Allen Human Brain Atlas
+into the homologous brain regions we define in this study. We weight the averages based 
+on the size of subregions.
+
+#Load data
+```{r}
+human_expression_matrix <- as_tibble(data.table::fread("../input_data/gene_expression/raw_data_files/human_expression_matrix.csv", header = TRUE))
+
+human_expression_matrix$Region_left_hipp_amyg <- sub("^","Left-", human_expression_matrix$Region_left_hipp_amyg)
+human_expression_matrix$Region_right_hipp_amyg <- sub("^","Right-", human_expression_matrix$Region_right_hipp_amyg)
+```
+
+```{r}
+weighting_variables <- read.csv("../input_data/gene_expression/raw_data_files/weights_for_aggregation_human.csv")
+```
+
+# Select the ROIS from the glasser atlas
+```{r}
+glasser_human_expression_matrix <- dplyr::filter(human_expression_matrix, Region_glasser %in% c("right V1", "left V1","right 4", "left 4",
+                                                                                          "right 3a", "left 3a","right 3b", "left 3b",
+                                                                                          "right 1", "left 1", "right 2", "left 2",
+                                                                                          "right A1", "left A1","right RSC", "left RSC",
+                                                                                          "right a24pr", "left a24pr","right a24", "left a24",
+                                                                                          "right p24pr", "left p24pr","right p24", "left p24",
+                                                                                          "right 24dd", "left 24dd","right 24dv", "left 24dv",
+                                                                                          "right p32pr", "left p32pr","right d32", "left d32",
+                                                                                          "right a32pr", "left a32pr","right p32", "left p32",
+                                                                                          "right s32", "left s32", 
+                                                                                          "right AVI", "left AVI", "right AAIC", "left AAIC",
+                                                                                          "right MI", "left MI","right Pir", "left Pir",
+                                                                                          "right EC", "left EC","right PreS", "left PreS",
+                                                                                          "right PeEc", "left PeEc", "right TF", "left TF",
+                                                                                          "right PHA2", "left PHA2", "right PHA3", "left PHA3",
+                                                                                          "right 10r", "left 10r", "right 10v", "left 10v",
+                                                                                          "right FFC", "left FFC","right PIT", "left PIT",
+                                                                                          "right TE1a", "left TE1a","right TE1p", "left TE1p",
+                                                                                          "right TE2a", "left TE2a","right TF", "left TF",
+                                                                                          "right STV", "left STV","right STSvp", "left STSvp",
+                                                                                          "right STSva", "left STSva","right 5m", "left 5m",
+                                                                                          "right 5mv", "left 5mv","right 5L", "left 5L"))
+df_glasser_human_expression_matrix <- dplyr::select(glasser_human_expression_matrix, -"Region_hypothalamus",	-"Region_subcortical",	-"Region_brainstem", -"Region_left_hipp_amyg",	-"Region_right_hipp_amyg")
+```
+
+## add proportion information to data
+```{r}
+aggregated_expression_glasser <- df_glasser_human_expression_matrix %>% dplyr::filter(!is.na(Region_glasser)) %>% group_by(Region_glasser) %>% summarise_all(mean)
+
+weighting_variables_glasser <- weighting_variables
+colnames(weighting_variables_glasser)[colnames(weighting_variables_glasser) == "label"] ="Region_glasser"
+weighting_variables_glasser$Region_glasser <- gsub("rh_R_", "right ", weighting_variables_glasser$Region_glasser)
+weighting_variables_glasser$Region_glasser <- gsub("lh_L_", "left ", weighting_variables_glasser$Region_glasser)
+weighting_variables_glasser$Region_glasser <- gsub("_ROI_volume", "", weighting_variables_glasser$Region_glasser)
+```
+
+## Apply weighted mean function
+```{r}
+aggregated_expression_glasser_1 <- left_join(aggregated_expression_glasser, weighting_variables_glasser[,c("Region_glasser","aggregate_label","proportion_value")], by="Region_glasser")
+df_labels <- dplyr::select(aggregated_expression_glasser_1, "Region_glasser","aggregate_label","proportion_value")
+df_genes <- dplyr::select(aggregated_expression_glasser_1, -"Region_glasser",-"aggregate_label",-"proportion_value") 
+
+agg_labels <- unique(df_labels$aggregate_label)
+
+
+avg_glasser <- matrix(0, length(agg_labels), ncol = ncol(df_genes))
+
+for (i in 1:length(agg_labels)) {
+   
+   ind_label <- df_labels$aggregate_label == agg_labels[i]
+
+   for (j in 1:ncol(df_genes)) {
+      expr <- df_genes[ind_label,][[j]] 
+      weights <- df_labels[ind_label,]$proportion_value
+
+      avg_glasser[i,j] <- weighted.mean(expr, weights)
+   }
+}
+
+colnames(avg_glasser) <- colnames(df_genes)
+rownames(avg_glasser) <- agg_labels
+df_avg_glasser <- avg_glasser %>% as.data.frame()
+df_avg_glasser$Region <- agg_labels
+```
+
+## Summarize values across ROIs
+```{r}
+df_glasser_human_expression_matrix$Region_glasser <- gsub("area4dd", "area", df_glasser_human_expression_matrix$Region_glasser)
+df_glasser_human_expression_matrix$Region_glasser <- gsub("area0r", "area", df_glasser_human_expression_matrix$Region_glasser)
+df_glasser_human_expression_matrix$Region_glasser <- gsub("area0v", "area", df_glasser_human_expression_matrix$Region_glasser)
+df_glasser_human_expression_matrix$Region_glasser <- gsub("area4dv", "area", df_glasser_human_expression_matrix$Region_glasser)
+df_glasser_human_expression_matrix$Region_glasser <- gsub("areasv", "areas", df_glasser_human_expression_matrix$Region_glasser)
+
+df_glasser_human_expression_matrix_agg <- df_glasser_human_expression_matrix %>% filter(!is.na(Region_glasser)) %>% group_by(Region_glasser) %>% summarise_all(mean)
+df_glasser_human_expression_matrix_agg <-dplyr::rename(df_glasser_human_expression_matrix_agg,`Region`=Region_glasser)
+```
+
+# Select subcortical ROIs
+```{r}
+subcort_human_expression_matrix <- dplyr::filter(human_expression_matrix, Region_subcortical %in% c("Right-Cerebellum-Cortex", "Left-Cerebellum-Cortex",
+                                                                     "Right-Thalamus","Left-Thalamus",
+                                                                     "Right-Caudate","Left-Caudate",
+                                                                     "Right-Putamen","Left-Putamen",
+                                                                     "Right-Pallidum","Left-Pallidum",
+                                                                     "Right-Hippocampus","Left-Hippocampus",
+                                                                     "Right-Amygdala","Left-Amygdala",
+                                                                     "Right-Accumbens-area","Left-Accumbens-area",
+                                                                     "Brain-Stem"))
+df_subcort_human_expression_matrix <- select(subcort_human_expression_matrix, -"Region_hypothalamus",	-"Region_glasser",	-"Region_brainstem", -"Region_left_hipp_amyg",	-"Region_right_hipp_amyg")
+```
+
+# rename regions
+```{r}
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Left-Cerebellum-Cortex", "left Cerebellar cortex", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Right-Cerebellum-Cortex", "right Cerebellar cortex", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Left-Thalamus", "left Thalamus", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Right-Thalamus", "right Thalamus", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Left-Caudate", "left Caudate", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Right-Caudate", "right Caudate", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Left-Putamen", "left Putamen", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Right-Putamen", "right Putamen", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Left-Pallidum", "left Globus pallidus", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Right-Pallidum", "right Globus pallidus", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Left-Amygdala", "left Amygdala", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Right-Amygdala", "right Amygdala", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Left-Hippocampus", "left Hippocampus", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Right-Hippocampus", "right Hippocampus", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Left-Accumbens-area", "left Nucleus accumbens", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Right-Accumbens-area", "right Nucleus accumbens", df_subcort_human_expression_matrix$Region_subcortical)
+df_subcort_human_expression_matrix$Region_subcortical <- gsub("Brain-Stem", "Brainstem", df_subcort_human_expression_matrix$Region_subcortical)
+```
+
+## add proportion information to data
+```{r}
+aggregated_expression_subcortical <- df_subcort_human_expression_matrix %>% dplyr::filter(!is.na(Region_subcortical)) %>% group_by(Region_subcortical) %>% summarise_all(mean)
+
+weighting_variables_subcortical <- weighting_variables
+colnames(weighting_variables_subcortical)[colnames(weighting_variables_subcortical) == "label"] ="Region_subcortical"
+weighting_variables_subcortical$Region_subcortical <- gsub("rh_R_", "right ", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("lh_L_", "left ", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("_ROI_volume", "", weighting_variables_subcortical$Region_subcortical)
+
+weighting_variables_subcortical$Region_subcortical <- gsub("Left.Cerebellum.Cortex", "left Cerebellar cortex", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Right.Cerebellum.Cortex", "right Cerebellar cortex", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Left.Thalamus", "left Thalamus", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Right.Thalamus", "right Thalamus", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Left.Caudate", "left Caudate", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Right.Caudate", "right Caudate", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Left.Putamen", "left Putamen", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Right.Putamen", "right Putamen", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Left.Pallidum", "left Globus pallidus", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Right.Pallidum", "right Globus pallidus", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Left.Whole_amygdala", "left Amygdala", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Right.Whole_amygdala", "right Amygdala", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Left.Whole_hippocampus", "left Hippocampus", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Right.Whole_hippocampus", "right Hippocampus", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Left.Accumbens.area", "left Nucleus accumbens", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Right.Accumbens.area", "right Nucleus accumbens", weighting_variables_subcortical$Region_subcortical)
+weighting_variables_subcortical$Region_subcortical <- gsub("Whole_brainstem", "Brainstem", weighting_variables_subcortical$Region_subcortical)
+```
+
+## Apply weighted mean function
+```{r}
+aggregated_expression_subcortical_1 <- left_join(aggregated_expression_subcortical, weighting_variables_subcortical[,c("Region_subcortical","aggregate_label","proportion_value")], by="Region_subcortical")
+df_labels_subc <- dplyr::select(aggregated_expression_subcortical_1, "Region_subcortical","aggregate_label","proportion_value")
+df_genes_subc <- dplyr::select(aggregated_expression_subcortical_1, -"Region_subcortical",-"aggregate_label",-"proportion_value") 
+
+agg_labels_subc <- unique(df_labels_subc$aggregate_label)
+
+avg_subcortical <- matrix(0, length(agg_labels_subc), ncol = ncol(df_genes_subc))
+
+for (i in 1:length(agg_labels_subc)) {
+   
+   ind_label_subcort <- df_labels_subc$aggregate_label == agg_labels_subc[i]
+
+   for (j in 1:ncol(df_genes_subc)) {
+      expr <- df_genes_subc[ind_label_subcort,][[j]] 
+      weights <- df_labels_subc[ind_label_subcort,]$proportion_value
+
+      avg_subcortical[i,j] <- weighted.mean(expr, weights)
+   }
+}
+
+colnames(avg_subcortical) <- colnames(df_genes_subc)
+rownames(avg_subcortical) <- agg_labels_subc
+df_avg_subcortical <- avg_subcortical %>% as.data.frame()
+df_avg_subcortical$Region <- agg_labels_subc
+```
+
+# Aggregate over the Left hippocampus/amygdala atlases
+```{r}
+Left_hp_amyg_human_expression_matrix <- dplyr::filter(human_expression_matrix, Region_left_hipp_amyg %in% c("Left-CA1-body", "Left-CA1-head", "Left-CA3-body", "Left-CA3-head",
+                                                                        "Left-GC-ML-DG-body","Left-GC-ML-DG-head")) 
+df_Left_hp_amyg_human_expression_matrix <- select(Left_hp_amyg_human_expression_matrix, -"Region_hypothalamus",	-"Region_glasser",	-"Region_brainstem", -"Region_subcortical",	-"Region_right_hipp_amyg")
+```
+
+## add proportion information to data
+```{r}
+aggregated_expression_left_hp_amyg <- df_Left_hp_amyg_human_expression_matrix %>% filter(!is.na(Region_left_hipp_amyg)) %>% group_by(Region_left_hipp_amyg) %>% summarise_all(mean)
+
+weighting_variables_left_hp_amyg <- weighting_variables
+colnames(weighting_variables_left_hp_amyg)[colnames(weighting_variables_left_hp_amyg) == "label"] ="Region_left_hipp_amyg"
+weighting_variables_left_hp_amyg$Region_left_hipp_amyg <- gsub("Left.CA1.body", "Left-CA1-body", weighting_variables_left_hp_amyg$Region_left_hipp_amyg)
+weighting_variables_left_hp_amyg$Region_left_hipp_amyg <- gsub("Left.CA1.head", "Left-CA1-head", weighting_variables_left_hp_amyg$Region_left_hipp_amyg)
+weighting_variables_left_hp_amyg$Region_left_hipp_amyg <- gsub("Left.CA3.body", "Left-CA3-body", weighting_variables_left_hp_amyg$Region_left_hipp_amyg)
+weighting_variables_left_hp_amyg$Region_left_hipp_amyg <- gsub("Left.CA3.head", "Left-CA3-head", weighting_variables_left_hp_amyg$Region_left_hipp_amyg)
+weighting_variables_left_hp_amyg$Region_left_hipp_amyg <- gsub("Left.GC.ML.DG.body", "Left-GC-ML-DG-body", weighting_variables_left_hp_amyg$Region_left_hipp_amyg)
+weighting_variables_left_hp_amyg$Region_left_hipp_amyg <- gsub("Left.GC.ML.DG.head", "Left-GC-ML-DG-head", weighting_variables_left_hp_amyg$Region_left_hipp_amyg)
+```
+
+## Apply weighted mean function
+```{r}
+aggregated_expression_left_hp_amyg_1 <- left_join(aggregated_expression_left_hp_amyg, weighting_variables_left_hp_amyg[,c("Region_left_hipp_amyg","aggregate_label","proportion_value")], by="Region_left_hipp_amyg")
+df_labels_l_hp_amyg <- dplyr::select(aggregated_expression_left_hp_amyg_1, "Region_left_hipp_amyg","aggregate_label","proportion_value")
+df_genes_l_hp_amyg <- dplyr::select(aggregated_expression_left_hp_amyg_1, -"Region_left_hipp_amyg",-"aggregate_label",-"proportion_value") 
+
+agg_labels_l_hp_amyg <- unique(df_labels_l_hp_amyg$aggregate_label)
+
+avg_l_hp_amyg <- matrix(0, length(agg_labels_l_hp_amyg), ncol = ncol(df_genes_l_hp_amyg))
+
+for (i in 1:length(agg_labels_l_hp_amyg)) {
+   
+   ind_label_l_hp_amyg <- df_labels_l_hp_amyg$aggregate_label == agg_labels_l_hp_amyg[i]
+
+   for (j in 1:ncol(df_genes_l_hp_amyg)) {
+      expr <- df_genes_l_hp_amyg[ind_label_l_hp_amyg,][[j]] 
+      weights <- df_labels_l_hp_amyg[ind_label_l_hp_amyg,]$proportion_value
+
+      avg_l_hp_amyg[i,j] <- weighted.mean(expr, weights)
+   }
+}
+
+colnames(avg_l_hp_amyg) <- colnames(df_genes_l_hp_amyg)
+rownames(avg_l_hp_amyg) <- agg_labels_l_hp_amyg
+df_avg_l_hp_amyg <- avg_l_hp_amyg %>% as.data.frame()
+df_avg_l_hp_amyg$Region <- agg_labels_l_hp_amyg
+```
+
+# Aggregate over the Right hippocampus/amygdala atlases
+```{r}
+Right_hp_amyg_human_expression_matrix <- dplyr::filter(human_expression_matrix,Region_right_hipp_amyg %in% c("Right-CA1-body", "Right-CA1-head", "Right-CA3-body", "Right-CA3-head",
+                                                                        "Right-GC-ML-DG-body","Right-GC-ML-DG-head")) 
+df_Right_hp_amyg_human_expression_matrix <- select(Right_hp_amyg_human_expression_matrix, -"Region_hypothalamus",	-"Region_glasser",	-"Region_brainstem", -"Region_subcortical",	-"Region_left_hipp_amyg")
+```
+
+## add proportion information to data
+```{r}
+aggregated_expression_right_hp_amyg <- df_Right_hp_amyg_human_expression_matrix %>% filter(!is.na(Region_right_hipp_amyg)) %>% group_by(Region_right_hipp_amyg) %>% summarise_all(mean)
+
+weighting_variables_right_hp_amyg <- weighting_variables
+colnames(weighting_variables_right_hp_amyg)[colnames(weighting_variables_right_hp_amyg) == "label"] ="Region_right_hipp_amyg"
+weighting_variables_right_hp_amyg$Region_right_hipp_amyg <- gsub("Right.CA1.body", "Right-CA1-body", weighting_variables_right_hp_amyg$Region_right_hipp_amyg)
+weighting_variables_right_hp_amyg$Region_right_hipp_amyg <- gsub("Right.CA1.head", "Right-CA1-head", weighting_variables_right_hp_amyg$Region_right_hipp_amyg)
+weighting_variables_right_hp_amyg$Region_right_hipp_amyg <- gsub("Right.CA3.body", "Right-CA3-body", weighting_variables_right_hp_amyg$Region_right_hipp_amyg)
+weighting_variables_right_hp_amyg$Region_right_hipp_amyg <- gsub("Right.CA3.head", "Right-CA3-head", weighting_variables_right_hp_amyg$Region_right_hipp_amyg)
+weighting_variables_right_hp_amyg$Region_right_hipp_amyg <- gsub("Right.GC.ML.DG.body", "Right-GC-ML-DG-body", weighting_variables_right_hp_amyg$Region_right_hipp_amyg)
+weighting_variables_right_hp_amyg$Region_right_hipp_amyg <- gsub("Right.GC.ML.DG.head", "Right-GC-ML-DG-head", weighting_variables_right_hp_amyg$Region_right_hipp_amyg)
+```
+
+## Apply weighted mean function
+```{r}
+aggregated_expression_right_hp_amyg_1 <- left_join(aggregated_expression_right_hp_amyg, weighting_variables_right_hp_amyg[,c("Region_right_hipp_amyg","aggregate_label","proportion_value")], by="Region_right_hipp_amyg")
+
+df_labels_r_hp_amyg <- dplyr::select(aggregated_expression_right_hp_amyg_1, "Region_right_hipp_amyg","aggregate_label","proportion_value")
+df_genes_r_hp_amyg <- dplyr::select(aggregated_expression_right_hp_amyg_1, -"Region_right_hipp_amyg",-"aggregate_label",-"proportion_value") 
+
+agg_labels_r_hp_amyg <- unique(df_labels_r_hp_amyg$aggregate_label)
+
+avg_r_hp_amyg <- matrix(0, length(agg_labels_r_hp_amyg), ncol = ncol(df_genes_r_hp_amyg))
+
+for (i in 1:length(agg_labels_r_hp_amyg)) {
+   
+   ind_label_r_hp_amyg <- df_labels_r_hp_amyg$aggregate_label == agg_labels_r_hp_amyg[i]
+
+   for (j in 1:ncol(df_genes_r_hp_amyg)) {
+      expr <- df_genes_r_hp_amyg[ind_label_r_hp_amyg,][[j]] 
+      weights <- df_labels_r_hp_amyg[ind_label_r_hp_amyg,]$proportion_value
+
+      avg_r_hp_amyg[i,j] <- weighted.mean(expr, weights)
+   }
+}
+
+colnames(avg_r_hp_amyg) <- colnames(df_genes_r_hp_amyg)
+rownames(avg_r_hp_amyg) <- agg_labels_r_hp_amyg
+df_avg_r_hp_amyg <- avg_r_hp_amyg %>% as.data.frame()
+df_avg_r_hp_amyg$Region <- agg_labels_r_hp_amyg
+```
+
+# Brainstem atlas
+```{r}
+Brainstem_amyg_human_expression_matrix <- dplyr::filter(human_expression_matrix, Region_brainstem %in% c("Midbrain","Pons", "Medulla"))
+df_Brainstem_amyg_human_expression_matrix <- select(Brainstem_amyg_human_expression_matrix, -"Region_hypothalamus",	-"Region_glasser",	-"Region_right_hipp_amyg", -"Region_subcortical",	-"Region_left_hipp_amyg")
+```
+
+## add proportion information to data
+```{r}
+aggregated_expression_brainstem <- df_Brainstem_amyg_human_expression_matrix %>% dplyr::filter(!is.na(Region_brainstem)) %>% group_by(Region_brainstem) %>% summarise_all(mean)
+
+weighting_variables_brainstem <- weighting_variables
+colnames(weighting_variables_brainstem)[colnames(weighting_variables_brainstem) == "label"] ="Region_brainstem"
+```
+
+## Apply weighted mean function
+```{r}
+aggregated_expression_brainstem_1 <- left_join(aggregated_expression_brainstem, weighting_variables_brainstem[,c("Region_brainstem","aggregate_label","proportion_value")], by="Region_brainstem")
+
+df_labels_brainstem <- dplyr::select(aggregated_expression_brainstem_1, "Region_brainstem","aggregate_label","proportion_value")
+df_genes_brainstem <- dplyr::select(aggregated_expression_brainstem_1, -"Region_brainstem",-"aggregate_label",-"proportion_value") 
+
+agg_labels_brainstem <- unique(df_labels_brainstem$aggregate_label)
+
+avg_brainstem <- matrix(0, length(agg_labels_brainstem), ncol = ncol(df_genes_brainstem))
+
+for (i in 1:length(agg_labels_brainstem)) {
+   
+   ind_label_brainstem <- df_labels_brainstem$aggregate_label == agg_labels_brainstem[i]
+
+   for (j in 1:ncol(df_genes_brainstem)) {
+      expr <- df_genes_brainstem[ind_label_brainstem,][[j]] 
+      weights <- df_labels_brainstem[ind_label_brainstem,]$proportion_value
+
+      avg_brainstem[i,j] <- weighted.mean(expr, weights)
+   }
+}
+
+colnames(avg_brainstem) <- colnames(df_genes_brainstem)
+rownames(avg_brainstem) <- agg_labels_brainstem
+df_avg_brainstem <- avg_brainstem %>% as.data.frame()
+df_avg_brainstem$Region <- agg_labels_brainstem
+```
+
+# Hypothalamus atlas
+```{r}
+Hypothal_amyg_human_expression_matrix <- dplyr::filter(human_expression_matrix,Region_hypothalamus %in% c(
+                                                                      "left lateral hypothalamus",
+                                                                      "left ventromedial hypothalamus",
+                                                                      "left dorsomedial hypothalamic nucleus")) #"left bed nucleus of the stria terminalis",
+df_Hypothal_human_expression_matrix <- select(Hypothal_amyg_human_expression_matrix, -"Region_brainstem",	-"Region_glasser",	-"Region_right_hipp_amyg", -"Region_subcortical",	-"Region_left_hipp_amyg")
+```
+
+## add proportion information to data
+```{r}
+aggregated_expression_hypothal <- df_Hypothal_human_expression_matrix %>% filter(!is.na(Region_hypothalamus)) %>% group_by(Region_hypothalamus) %>% summarise_all(mean)
+
+weighting_variables_hypothal <- weighting_variables
+
+colnames(weighting_variables_hypothal)[colnames(weighting_variables_hypothal) == "label"] ="Region_hypothalamus"
+#weighting_variables_hypothal$Region_hypothalamus <- gsub("L_BNST", "left bed nucleus of the stria terminalis", weighting_variables_hypothal$Region_hypothalamus)
+weighting_variables_hypothal$Region_hypothalamus <- gsub("L_DM", "left dorsomedial hypothalamic nucleus", weighting_variables_hypothal$Region_hypothalamus)
+weighting_variables_hypothal$Region_hypothalamus <- gsub("L_LH", "left lateral hypothalamus", weighting_variables_hypothal$Region_hypothalamus)
+weighting_variables_hypothal$Region_hypothalamus <- gsub("L_VM", "left ventromedial hypothalamus", weighting_variables_hypothal$Region_hypothalamus)
+```
+
+## Apply weighted mean function
+```{r}
+aggregated_expression_hypothal_1 <- left_join(aggregated_expression_hypothal, weighting_variables_hypothal[,c("Region_hypothalamus","aggregate_label","proportion_value")], by="Region_hypothalamus")
+
+df_labels_hypothal <- dplyr::select(aggregated_expression_hypothal_1, "Region_hypothalamus","aggregate_label","proportion_value")
+df_genes_hypothal <- dplyr::select(aggregated_expression_hypothal_1, -"Region_hypothalamus",-"aggregate_label",-"proportion_value") 
+
+agg_labels_hypothal <- unique(df_labels_hypothal$aggregate_label)
+
+avg_hypothal <- matrix(0, length(agg_labels_hypothal), ncol = ncol(df_genes_hypothal))
+
+for (i in 1:length(agg_labels_hypothal)) {
+   
+   ind_label_hypothal <- df_labels_hypothal$aggregate_label == agg_labels_hypothal[i]
+
+   for (j in 1:ncol(df_genes_hypothal)) {
+      expr <- df_genes_hypothal[ind_label_hypothal,][[j]] 
+      weights <- df_labels_hypothal[ind_label_hypothal,]$proportion_value
+
+      avg_hypothal[i,j] <- weighted.mean(expr, weights)
+   }
+}
+
+colnames(avg_hypothal) <- colnames(df_genes_hypothal)
+rownames(avg_hypothal) <- agg_labels_hypothal
+df_avg_hypothal <- avg_hypothal %>% as.data.frame()
+df_avg_hypothal$Region <- agg_labels_hypothal
+```
+
+# BNST
+```{r}
+Hypothal_bnst_human_expression_matrix <- dplyr::filter(human_expression_matrix, Region_hypothalamus %in% c("left bed nucleus of the stria terminalis"))
+
+df_Hypothal_bnst_human_expression_matrix <- select(Hypothal_bnst_human_expression_matrix, -"Region_brainstem",	-"Region_glasser",	-"Region_right_hipp_amyg", -"Region_subcortical",	-"Region_left_hipp_amyg")
+
+df_Hypothal_bnst_human_expression_matrix$Region_hypothalamus <- gsub("left bed nucleus of the stria terminalis", "left Bed nuclei of the stria terminalis", df_Hypothal_bnst_human_expression_matrix$Region_hypothalamus)
+
+df_Hypothal_bnst_human_expression_matrix_agg1 <- df_Hypothal_bnst_human_expression_matrix %>% filter(!is.na(Region_hypothalamus)) %>% group_by(Region_hypothalamus) %>% summarise_all(mean)
+
+df_Hypothal_bnst_human_expression_matrix_agg <-dplyr::rename(df_Hypothal_bnst_human_expression_matrix_agg1,`Region`=Region_hypothalamus)
+```
+
+
+## Merge data with weighted means
+```{r}
+df_human_gene_expression_matrix_1 <- bind_rows(df_avg_glasser, df_avg_subcortical)
+df_human_gene_expression_matrix_2 <- bind_rows(df_human_gene_expression_matrix_1, df_avg_brainstem)
+df_human_gene_expression_matrix_3 <- bind_rows(df_human_gene_expression_matrix_2, df_avg_l_hp_amyg)
+df_human_gene_expression_matrix_4 <- bind_rows(df_human_gene_expression_matrix_3, df_avg_r_hp_amyg)
+df_human_gene_expression_matrix_5 <- bind_rows(df_human_gene_expression_matrix_4, df_avg_hypothal)
+df_weighted_human_gene_expression_matrix <- bind_rows(df_human_gene_expression_matrix_5, df_Hypothal_bnst_human_expression_matrix_agg)
+
+#write.csv(df_weighted_human_gene_expression_matrix, "../input_data/gene_expression/aggregated_data/weighted_aggregated_human_gene_expression.csv")
+#saveRDS(df_weighted_human_gene_expression_matrix, "../input_data/gene_expression/aggregated_data/weighted_aggregated_human_gene_expression.RDS")
+```
+
+
+#filter by homologous genes
+```{r}
+homologous_genes <- read.csv("../input_data/gene_expression/raw_data_files/MouseHumanGeneHomologs.csv")
+homologous_genes$Human
+
+homologs <- homologous_genes$Human %>% as.character() 
+
+justgenes <- df_weighted_human_gene_expression_matrix[,2:ncol(df_weighted_human_gene_expression_matrix)]
+t_justgenes <- t(justgenes)
+rownames(t_justgenes) <- colnames(justgenes)
+colnames(t_justgenes) <- df_weighted_human_gene_expression_matrix$Region
+gene <- rownames(t_justgenes) %>% as.character()
+t_justgenes1 <- cbind (gene, t_justgenes) %>% as.data.frame()
+
+t_genes_homologs<- subset(t_justgenes1, gene %in% homologs)
+
+#write.csv(t_genes_homologs, "../input_data/gene_expression/aggregated_data/transposed_homologous_human_genes_weighted.csv")
+#saveRDS(t_genes_homologs, ".../input_data/gene_expression/aggregated_data/transposed_homologous_human_genes_weighted.RDS")
+```

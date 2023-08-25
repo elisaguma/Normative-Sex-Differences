@@ -1,0 +1,337 @@
+---
+title: "Gene-resampling"
+output: html_document
+date: "2023-07-05"
+---
+
+# Load in necessary libraries
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(RMINC)
+library(data.tree)
+library(ggrepel)
+library(ggplot2)
+library(ggseg)
+library(readr)
+library(sva)
+library(corrplot)
+library(WRS2)
+source('../input_data/tree_tools.R')
+```
+
+
+
+# Load in anatomical data
+```{r}
+df_combat_vols <- readRDS("../input_data/mouse_anatomy/Mouse_homologs_aggregated_postcombat.RDS") %>% as.data.frame()
+human_HCP_data_homologs <- readRDS("../input_data/mouse_anatomy/HCP_homologs_aggregated.RDS") %>% as.data.frame()
+```
+
+## Clean up data to match transcriptional ROIs
+```{r}
+df_mouse_vols <- dplyr::select(df_combat_vols, -ends_with("Medial amygdalar nucleus"),	-ends_with("Medial preoptic nucleus"))
+
+df_human_vols <- dplyr::select(human_HCP_data_homologs,-ends_with("amygdalar nucleus"),	-ends_with("Medial preoptic nucleus"))
+```
+
+# Calculate z-scores for mouse
+```{r}
+mouse_vols <- df_mouse_vols[,11:ncol(df_mouse_vols)] %>% as.matrix()
+mouse_demo <- df_mouse_vols[,c(1:10)]
+
+zscores_volumes <- matrix(0, nrow = nrow(mouse_vols), ncol = ncol(mouse_vols))
+for(j in 1:ncol(mouse_vols)){
+  mu <- mean(mouse_vols[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(mouse_vols[,j]) #And standard deviations
+  zscores_volumes[,j] <- (mouse_vols[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+colnames(zscores_volumes)<-colnames(mouse_vols)
+df_zscored_mouse_homologs <- mouse_demo %>%  cbind(zscores_volumes)
+```
+
+### With TBV covariate
+Tun the linear model testing for group, correcting for total tissue volume to extract standardized beta values
+```{r}
+sexdiff_mouse_lm_wTBV <- anatLm(~ Mouse_Sex+Background + total_tissue_volume + AGE_cent , df_zscored_mouse_homologs,
+                             df_zscored_mouse_homologs[,11:ncol(df_zscored_mouse_homologs)])
+FDR_sexdiff_mouse_wTBV <- anatFDR(sexdiff_mouse_lm_wTBV)
+FDR_sexdiff_mouse_wTBV
+
+Sex_mouse_model_outputs_wTBV <- sexdiff_mouse_lm_wTBV %>% as.data.frame()
+Sex_mouse_model_outputs_wTBV$label <- rownames(Sex_mouse_model_outputs_wTBV)
+```
+
+## Zscore Human Data
+```{r}
+human_vols <- df_human_vols[,7:ncol(df_human_vols)] 
+HCP_demo <- df_human_vols[,1:6]
+
+zscores_HCP <- matrix(0, nrow = nrow(human_vols), ncol = ncol(human_vols))
+for(j in 1:ncol(human_vols)){
+  mu <- mean(human_vols[,j]) #Then you can compute the ROI-wise averages
+  sigma <- sd(human_vols[,j]) #And standard deviations
+  zscores_HCP[,j] <- (human_vols[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+}
+
+### Assign column names and "rebind" demographics data
+colnames(zscores_HCP)<-colnames(human_vols)
+df_human_homologs <- HCP_demo %>% cbind(zscores_HCP) 
+```
+
+
+### With TBV covariate
+Here we run a linear model testing for group differences (XXY vs XY) covarying for age and total tissue volume so that we can extract standardized beta values for each region of interest.
+```{r}
+Sex_diffs_homologs_lm_wTBV= anatLm(~ Sex + AGE_cent + BrainSegVolNotVent.y, df_human_homologs,
+                             df_human_homologs[,7:ncol(df_human_homologs)])
+FDR_Sex_Lm_wTBV_zscore <- anatFDR(Sex_diffs_homologs_lm_wTBV)
+FDR_Sex_Lm_wTBV_zscore
+
+Human_sex_model_outputs_wTBV <- Sex_diffs_homologs_lm_wTBV %>% as.data.frame()
+Human_sex_model_outputs_wTBV$label <- rownames(Human_sex_model_outputs_wTBV)
+```
+
+
+```{r}
+Human_sex_model_outputs_wTBV_filtered <- dplyr::select(Human_sex_model_outputs_wTBV, "label", "beta-SexM")
+Sex_mouse_model_outputs_wTBV_filtered <- dplyr::select(Sex_mouse_model_outputs_wTBV, "label", "beta-Mouse_SexM")
+
+df_homologous_anatomical_betas<-merge(Human_sex_model_outputs_wTBV_filtered, Sex_mouse_model_outputs_wTBV_filtered, by="label")
+df_homologous_anatomical_betas$label <- as.character(df_homologous_anatomical_betas$label)
+df_homologous_anatomical_betas$anat_dot_prod <- df_homologous_anatomical_betas$`beta-SexM` * df_homologous_anatomical_betas$`beta-Mouse_SexM`
+df_homologous_anatomical_betas$label <- gsub("Brain stem", "Brainstem", df_homologous_anatomical_betas$label)
+```
+
+## Annotate Region 
+```{r}
+df_homologous_anatomical_betas$cort_vs_subcort <- df_homologous_anatomical_betas$label
+
+df_homologous_anatomical_betas$cort_vs_subcort[1] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[2] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[3] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[4] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[5:8] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[9] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[10:15]<- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[16:23] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[24] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[25] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[26] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[27] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[28:30] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[31] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[32] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[33] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[34:37] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[38] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[39:44] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[45:52] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[53] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[54] <- "Cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[55] <- "Not cortex"
+df_homologous_anatomical_betas$cort_vs_subcort[56] <- "Cortex"
+```
+
+
+
+## Load in homologous gene expression data
+```{r}
+df_mouse_homologs <- readRDS("../input_data/gene_expression/aggregated_data/transposed_homologous_mouse_genes.RDS") %>% as.data.frame()
+
+df_human_homologs <- readRDS("../input_data/gene_expression/aggregated_data/transposed_homologous_human_genes_weighted.RDS") %>% as.data.frame()
+
+homologous_genes <- read.csv("../input_data/gene_expression/raw_data_files/MouseHumanGeneHomologs_edited.csv")
+```
+
+# reflect left hemisphere to right hemisphere
+```{r}
+df_human_homologs$`right Bed nuclei of the stria terminalis` <- df_human_homologs$`left Bed nuclei of the stria terminalis`
+df_human_homologs$`right Dentate gyrus, molecular layer` <- df_human_homologs$`left Dentate gyrus, molecular layer`
+df_human_homologs$`right Field CA3` <- df_human_homologs$`left Field CA3`
+df_human_homologs$`right Hypothalamus` <- df_human_homologs$`left Hypothalamus`
+df_human_homologs <-dplyr::rename(df_human_homologs,`Brainstem`=`Brain Stem`)
+```
+
+#filter data
+```{r}
+df_mouse_homologs_filt <- dplyr::select(df_mouse_homologs,-ends_with("Medial amygdalar nucleus"),
+                                -ends_with("Medial preoptic nucleus"))
+df_human_homologs_filt <- df_human_homologs
+```
+#find matching homologous genes
+```{r}
+homologous_genes$Key %>% as.factor()
+homologous_genes$Mouse %>% as.factor()
+df_mouse_homologs_filt_1 <-  dplyr::rename(df_mouse_homologs_filt,`Mouse` = `gene`)
+homologous_genes_mouse_1 <- left_join(df_mouse_homologs_filt_1, homologous_genes, by = "Mouse", unmatched = "drop")
+homologous_genes_mouse_filt <- homologous_genes_mouse_1[, c("Mouse", "Key")]
+
+homologous_genes$Human %>% as.factor()
+df_human_homologs_filt_1 <-  dplyr::rename(df_human_homologs_filt,`Human` = `gene`)
+homologous_genes_human1 <- left_join(df_human_homologs_filt_1, homologous_genes, by = "Human", unmatched = "drop")
+homologous_genes_human_filt <- homologous_genes_human1[, c("Human", "Key")]
+
+conjunction_genes <- merge(homologous_genes_mouse_filt, homologous_genes_human_filt, by="Key")
+```
+
+#filter by matching homologous genes
+```{r}
+df_mouse_homologs_filt1 <- left_join(conjunction_genes, df_mouse_homologs_filt_1, by="Mouse")
+df_mouse_homologs_filt_final <- dplyr::select(df_mouse_homologs_filt1, -"Key",	-"Human")
+df_mouse_homologs_filt_final <-  dplyr::rename(df_mouse_homologs_filt_final,`gene` = `Mouse`)
+
+df_human_homologs_filt1 <- left_join(conjunction_genes, df_human_homologs_filt_1, by="Human")
+df_human_homologs_filt_final <- dplyr::select(df_human_homologs_filt1, -"Key",	-"Mouse")
+df_human_homologs_filt_final <-  dplyr::rename(df_human_homologs_filt_final,`gene` = `Human`)
+```
+
+## Load in chromosome information for mouse
+```{r}
+df_mouse_chromosomes_allen <- as_tibble(data.table::fread("../input_data/gene_expression/chromosome_info/mouse_chromosome_fullinfo.csv", header = TRUE))
+df_mouse_chromosomes_allen_filt <- dplyr::select(df_mouse_chromosomes_allen, "acronym", "chromosome_id")
+df_mouse_chromosomes_allen_filt <-dplyr::rename(df_mouse_chromosomes_allen_filt,`gene`= acronym)
+
+df_mouse_key_allen <- as_tibble(data.table::fread("../input_data/gene_expression/chromosome_info/chromosome_key_allen.csv", header = TRUE))
+df_mouse_key_allen_filt <- dplyr::select(df_mouse_key_allen, "id", "name")
+df_mouse_key_allen_filt <-dplyr::rename(df_mouse_key_allen_filt,`chromosome_id`=id)
+df_mouse_key_allen_filt <-dplyr::rename(df_mouse_key_allen_filt,`chromosome`=name)
+
+merged_mouse_chromosome_info <- inner_join(df_mouse_key_allen_filt, df_mouse_chromosomes_allen_filt, by="chromosome_id") %>% na.omit()
+df_mouse_chromosomes_filt <- merged_mouse_chromosome_info[!duplicated(merged_mouse_chromosome_info), ]
+```
+
+
+## Load in chromosome information
+```{r}
+df_human_chromosomes <- as_tibble(data.table::fread("../input_data/gene_expression/chromosome_info/human_chromosome_genes.csv", header = TRUE))
+
+df_human_chromosomes_filt <- dplyr::select(df_human_chromosomes, "chromosome", "gene")
+df_mouse_chromosomes_filt <- dplyr::select(df_mouse_chromosomes_filt, "chromosome", "gene")
+
+df_human_homologs_filt_final_chromo <- left_join(df_human_homologs_filt_final, df_human_chromosomes_filt, by="gene")
+df_mouse_homologs_filt_final_chromo <- left_join(df_mouse_homologs_filt_final, df_mouse_chromosomes_filt, by="gene") %>% 
+  na.omit() %>% filter(!duplicated("gene"))
+```
+
+## Select the rows from the demographics dataset that correspond to the groups of interest
+```{r}
+human_genes <- df_human_homologs_filt_final_chromo$gene
+mouse_genes <- df_mouse_homologs_filt_final_chromo$gene
+```
+## Assign the number of samples
+```{r}
+nsamples <- 10000
+```
+
+# Sample indices for half of the rows
+```{r}
+#Human
+listSampleIndices_random_genes <- vector(mode = "list", length = nsamples)
+for(i in 1:nsamples){
+  listSampleIndices_random_genes[[i]] = sample(x = 1:length(human_genes), size = 0.012*length(human_genes), replace = FALSE)
+}
+```
+
+# Human Resampling
+```{r message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+resampled_gene_expression <- matrix(NA, nrow = 56, ncol=10000)
+
+for(i in 1:nsamples){
+#Using the sampled indices, extract the sets of rows corresponding to either male or female entries
+    gene_list_human <- human_genes[listSampleIndices_random_genes[[i]]] #
+    human_subset <- filter(df_human_homologs_filt_final_chromo, gene %in% gene_list_human)
+ ### calculate z-scores
+    human_subset_genes1 <- human_subset[,2:57] 
+    human_subset_genes <- sapply(human_subset_genes1, as.numeric) %>% as.matrix()
+    human_demo <- human_subset[,c(1,58)]
+ 
+     zscores_human_gene_subset <- matrix(0, nrow = nrow(human_subset_genes), ncol = ncol(human_subset_genes))
+      for(j in 1:ncol(human_subset_genes)){
+        mu <- mean(human_subset_genes[,j]) #Then you can compute the ROI-wise averages
+        sigma <- sd(human_subset_genes[,j]) #And standard deviations
+        zscores_human_gene_subset[,j] <- (human_subset_genes[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+        }
+     colnames(zscores_human_gene_subset)<-colnames(human_subset_genes)
+     df_zscores_human_gene_subset <- human_demo %>% cbind(zscores_human_gene_subset) 
+     
+     #Repeat for mouse 
+     gene_list_mouse <- mouse_genes[listSampleIndices_random_genes[[i]]] #
+     mouse_subset <- filter(df_mouse_homologs_filt_final_chromo, gene %in% gene_list_mouse)
+  
+ ### calculate z-scores
+    mouse_subset_genes1 <- mouse_subset[,2:57]
+    mouse_subset_genes <- sapply(mouse_subset_genes1, as.numeric) %>% as.matrix()
+    mouse_demo <- mouse_subset[,c(1,58)]
+ 
+     zscores_mouse_gene_subset <- matrix(0, nrow = nrow(mouse_subset_genes), ncol = ncol(mouse_subset_genes))
+      for(j in 1:ncol(mouse_subset_genes)){
+        mu <- mean(mouse_subset_genes[,j]) #Then you can compute the ROI-wise averages
+        sigma <- sd(mouse_subset_genes[,j]) #And standard deviations
+        zscores_mouse_gene_subset[,j] <- (mouse_subset_genes[,j] - mu)/sigma #Then you can use those to make the z-score volumes
+        }
+     colnames(zscores_mouse_gene_subset)<-colnames(mouse_subset_genes)
+     df_zscores_mouse_gene_subset <- mouse_demo %>% cbind(zscores_mouse_gene_subset)
+     
+    resampled_gene_expression_corr <- rep(0, 56)
+    for(k in 1:ncol(zscores_human_gene_subset)) {
+      resampled_gene_expression_corr[k] <- pbcor(zscores_human_gene_subset[,k], zscores_mouse_gene_subset[,k]) }
+   
+     resampled_gene_expression_corr_unlist <- unlist(resampled_gene_expression_corr)
+    resampled_gene_expression[,i] <- resampled_gene_expression_corr_unlist
+}  
+
+label <- colnames(zscores_human_gene_subset)
+df_resampled_gene_expression <- cbind(label, resampled_gene_expression) %>% as_tibble()
+```
+
+
+# Correlate anatomical by transcriptional effects
+Calculate correlations
+```{r}
+df_resampled_gene_expression <- df_resampled_gene_expression %>% mutate(label = str_replace(label, "left","Left"))
+df_resampled_gene_expression <- df_resampled_gene_expression %>% mutate(label = str_replace(label, "right","Right")) %>% as.data.frame()
+df_resampled_gene_expression1 <- sapply(df_resampled_gene_expression, as.numeric) %>% as.matrix()
+resampled_gene_expression1 <- sapply(df_resampled_gene_expression, as.numeric) %>% as.matrix()
+
+df_homologous_anatomy_resampled_transcription <-merge(df_homologous_anatomical_betas, df_resampled_gene_expression1, by="label") %>% as.data.frame()
+
+anatomy <- df_homologous_anatomical_betas$anat_dot_prod
+anatomy_by_res_transcription <- rep(0, 10000)
+for(i in 1:ncol(resampled_gene_expression)) {
+  anatomy_by_res_transcription[i] <- pbcor(anatomy, resampled_gene_expression[,i]) }
+anatomy_by_res_transcription_unlist <- unlist(anatomy_by_res_transcription)
+
+summary(anatomy_by_res_transcription_unlist)
+```
+
+## Plot results
+```{r}
+df_anatomy_by_res_transcription_unlist <- anatomy_by_res_transcription_unlist %>% as.data.frame()
+vec1 <- rep(c("Resampled genes"), 10000)
+df_anatomy_by_transcription <- cbind(vec1, df_anatomy_by_res_transcription_unlist)
+colnames(df_anatomy_by_transcription)<- c("vec1", "correlation")
+
+ggplot(df_anatomy_by_transcription, aes(x=correlation, fill="green")) +
+    geom_density(alpha=.3) +
+   scale_fill_manual(labels = NULL, name=NULL, values=c('green'))+
+    theme_classic()+ xlab("Correlation coefficient")+ylab("Density")+
+    theme(text = element_text(size = 14))+
+    theme(legend.position="none") +
+    geom_vline(xintercept=c(0.25,-0.105,0.23,-0.21), linetype="dotted")+
+    geom_vline(xintercept=c(0))
+```
+
+
+```{r}
+library(infer)
+#X-chromosome genes observed p-value comparison
+get_p_value(df_anatomy_by_res_transcription_unlist, obs_stat = 0.25, direction = "two-sided")
+#Sex hormone genes observed p-value comparison
+get_p_value(df_anatomy_by_res_transcription_unlist, obs_stat = -0.11, direction = "two-sided")
+#Males hormone genes observed p-value comparison
+get_p_value(df_anatomy_by_res_transcription_unlist, obs_stat = 0.23, direction = "two-sided")
+#Female hormone genes observed p-value comparison
+get_p_value(df_anatomy_by_res_transcription_unlist, obs_stat = -0.21, direction = "two-sided")
+```
+
