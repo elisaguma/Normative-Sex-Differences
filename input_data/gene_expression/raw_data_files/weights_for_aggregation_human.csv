@@ -1,0 +1,129 @@
+,mean_vol,label,aggregate_label,mean_vol_agg,proportion_value
+32,25802.35489,Whole_brainstem,Brain Stem,25802.35489,1
+142,769.6217822,lh_L_AVI_ROI_volume,left Agranular insula,2803.427723,0.274528848
+144,892.1930693,lh_L_AAIC_ROI_volume,left Agranular insula,2803.427723,0.318250784
+146,1141.612871,lh_L_MI_ROI_volume,left Agranular insula,2803.427723,0.407220369
+26,1809.61276,Left.Whole_amygdala,left Amygdala,1809.61276,1
+54,1034.393069,lh_L_a24_ROI_volume,left Anterior cingulate area,9691.857426,0.106728053
+59,857.6237624,lh_L_p24_ROI_volume,left Anterior cingulate area,9691.857426,0.088489102
+102,1342.046535,lh_L_d32_ROI_volume,left Anterior cingulate area,9691.857426,0.138471551
+103,733.5772277,lh_L_p32_ROI_volume,left Anterior cingulate area,9691.857426,0.075690056
+112,406.0247525,lh_L_s32_ROI_volume,left Anterior cingulate area,9691.857426,0.041893389
+130,674.6742574,lh_L_a24pr_ROI_volume,left Anterior cingulate area,9691.857426,0.069612483
+132,664.9089109,lh_L_p24pr_ROI_volume,left Anterior cingulate area,9691.857426,0.0686049
+134,1404.291089,lh_L_24dd_ROI_volume,left Anterior cingulate area,9691.857426,0.144893907
+136,662.4940594,lh_L_24dv_ROI_volume,left Anterior cingulate area,9691.857426,0.068355737
+138,972.490099,lh_L_p32pr_ROI_volume,left Anterior cingulate area,9691.857426,0.100340942
+140,939.3336634,lh_L_a32pr_ROI_volume,left Anterior cingulate area,9691.857426,0.09691988
+6,3546.007129,Left.Caudate,left Caudoputamen,8481.592376,0.41808271
+8,4935.585248,Left.Putamen,left Caudoputamen,8481.592376,0.58191729
+2,57581.28119,Left.Cerebellum.Cortex,left Cerebellar cortex,57581.28119,1
+22,152.7187436,Left.GC.ML.DG.body,"left Dentate gyrus, molecular layer",335.7226734,0.45489553
+24,183.0039298,Left.GC.ML.DG.head,"left Dentate gyrus, molecular layer",335.7226734,0.54510447
+150,1117.332673,lh_L_EC_ROI_volume,left Entorhinal area,1117.332673,1
+14,143.1900876,Left.CA1.body,left Field CA1,1204.822826,0.118847423
+16,602.4114132,Left.CA1.head,left Field CA1,1204.822826,0.5
+18,83.28846566,Left.CA3.body,left Field CA3,222.8113984,0.373807024
+20,139.5229327,Left.CA3.head,left Field CA3,222.8113984,0.626192976
+10,1980.868614,Left.Pallidum,left Globus pallidus,1980.868614,1
+12,3559.572567,Left.Whole_hippocampus,left Hippocampus,3559.572567,1
+37,117.7352129,L_BNST,left Hypothalamus,218.0447934,0.539958836
+39,7.710570575,L_MPO,left Hypothalamus,218.0447934,0.035362324
+41,161.9698023,L_LH,left Hypothalamus,218.0447934,0.742828112
+43,22.92027723,L_VM,left Hypothalamus,218.0447934,0.105117287
+45,8.53511712,L_DM,left Hypothalamus,218.0447934,0.03914387
+47,24.61959673,L_AHA,left Hypothalamus,218.0447934,0.11291073
+28,543.4937624,Left.Accumbens.area,left Nucleus accumbens,543.4937624,1
+110,325.6594059,lh_L_PHA2_ROI_volume,left Perirhinal area,6739.59901,0.048320294
+151,2571.714851,lh_L_PeEc_ROI_volume,left Perirhinal area,6739.59901,0.381582769
+156,2684.010891,lh_L_TF_ROI_volume,left Perirhinal area,6739.59901,0.398244894
+158,1158.213861,lh_L_PHA3_ROI_volume,left Perirhinal area,6739.59901,0.171852043
+148,535.260396,lh_L_Pir_ROI_volume,left Piriform cortex,535.260396,1
+180,658.5871287,lh_L_5m_ROI_volume,left Posterior parietal association areas,2318.479208,0.284059968
+182,734.0970297,lh_L_5mv_ROI_volume,left Posterior parietal association areas,2318.479208,0.316628688
+184,925.7950495,lh_L_5L_ROI_volume,left Posterior parietal association areas,2318.479208,0.399311344
+78,505.7227723,lh_L_A1_ROI_volume,left Primary auditory area,505.7227723,1
+53,5143.271287,lh_L_4_ROI_volume,left Primary motor area,5143.271287,1
+69,1119.592079,lh_L_3a_ROI_volume,left Primary somatosensory area,9613.339604,0.116462346
+72,2595.538614,lh_L_3b_ROI_volume,left Primary somatosensory area,9613.339604,0.269993438
+80,3280.49505,lh_L_1_ROI_volume,left Primary somatosensory area,9613.339604,0.341244061
+101,2617.713861,lh_L_2_ROI_volume,left Primary somatosensory area,9613.339604,0.272300155
+48,6495.218812,lh_L_V1_ROI_volume,left Primary visual area,6495.218812,1
+128,957.3455446,lh_L_RSC_ROI_volume,left Retrosplenial area,957.3455446,1
+154,666.1435644,lh_L_PreS_ROI_volume,left Subiculum,666.1435644,1
+164,1952.364356,lh_L_FFC_ROI_volume,left Temporal association areas,18233.58812,0.10707516
+166,779.9613861,lh_L_PIT_ROI_volume,left Temporal association areas,18233.58812,0.042776078
+168,2534.093069,lh_L_TE1a_ROI_volume,left Temporal association areas,18233.58812,0.138979396
+170,3396.39505,lh_L_TE1p_ROI_volume,left Temporal association areas,18233.58812,0.186271349
+172,3245.113861,lh_L_TE2a_ROI_volume,left Temporal association areas,18233.58812,0.177974507
+174,1267.993069,lh_L_STV_ROI_volume,left Temporal association areas,18233.58812,0.06954161
+176,1386.618812,lh_L_STSvp_ROI_volume,left Temporal association areas,18233.58812,0.076047501
+178,987.0376238,lh_L_STSva_ROI_volume,left Temporal association areas,18233.58812,0.054132934
+4,8256.215446,Left.Thalamus,left Thalamus,8256.215446,1
+160,931.0643564,lh_L_10r_ROI_volume,left Ventral orbital area,3011.2,0.309200437
+162,2080.135644,lh_L_10v_ROI_volume,left Ventral orbital area,3011.2,0.690799563
+35,4889.495437,Medulla,Medulla,4889.495437,1
+33,5785.49425,Midbrain,Midbrain,5785.49425,1
+34,14865.91102,Pons,Pons,14865.91102,1
+143,900.3752475,rh_R_AVI_ROI_volume,right Agranular insula,2781.728713,0.323674715
+145,971.4039604,rh_R_AAIC_ROI_volume,right Agranular insula,2781.728713,0.349208733
+147,909.949505,rh_R_MI_ROI_volume,right Agranular insula,2781.728713,0.327116552
+27,1908.554127,Right.Whole_amygdala,right Amygdala,1908.554127,1
+62,899.1138614,rh_R_a24_ROI_volume,right Anterior cingulate area,10209.48416,0.088066532
+67,983.039604,rh_R_p24_ROI_volume,right Anterior cingulate area,10209.48416,0.096286902
+117,1316.853465,rh_R_d32_ROI_volume,right Anterior cingulate area,10209.48416,0.12898335
+118,923.1663366,rh_R_p32_ROI_volume,right Anterior cingulate area,10209.48416,0.090422427
+127,497.8425743,rh_R_s32_ROI_volume,right Anterior cingulate area,10209.48416,0.048762755
+131,702.4594059,rh_R_a24pr_ROI_volume,right Anterior cingulate area,10209.48416,0.068804593
+133,850.1029703,rh_R_p24pr_ROI_volume,right Anterior cingulate area,10209.48416,0.083266006
+135,1496.594059,rh_R_24dd_ROI_volume,right Anterior cingulate area,10209.48416,0.146588607
+137,817.8762376,rh_R_24dv_ROI_volume,right Anterior cingulate area,10209.48416,0.080109458
+139,919.9059406,rh_R_p32pr_ROI_volume,right Anterior cingulate area,10209.48416,0.090103077
+141,802.529703,rh_R_a32pr_ROI_volume,right Anterior cingulate area,10209.48416,0.078606293
+7,3647.800495,Right.Caudate,right Caudoputamen,8781.848416,0.415379579
+9,5134.047921,Right.Putamen,right Caudoputamen,8781.848416,0.584620421
+3,58785.63347,Right.Cerebellum.Cortex,right Cerebellar cortex,58785.63347,1
+23,153.6185949,Right.GC.ML.DG.body,"right Dentate gyrus, molecular layer",343.4501755,0.447280583
+25,189.8315806,Right.GC.ML.DG.head,"right Dentate gyrus, molecular layer",343.4501755,0.552719417
+152,876.1346535,rh_R_EC_ROI_volume,right Entorhinal area,876.1346535,1
+15,154.2590095,Right.CA1.body,right Field CA1,1247.077893,0.123696371
+17,623.5389464,Right.CA1.head,right Field CA1,1247.077893,0.5
+19,96.4982076,Right.CA3.body,right Field CA3,245.1695472,0.393597854
+21,148.6713396,Right.CA3.head,right Field CA3,245.1695472,0.606402146
+11,1998.32901,Right.Pallidum,right Globus pallidus,1998.32901,1
+13,3606.382322,Right.Whole_hippocampus,right Hippocampus,3606.382322,1
+36,108.2423579,R_BNST,right Hypothalamus,230.0037835,0.470611206
+38,7.368983788,R_MPO,right Hypothalamus,230.0037835,0.032038533
+40,166.3359034,R_LH,right Hypothalamus,230.0037835,0.723187684
+42,25.54179905,R_VM,right Hypothalamus,230.0037835,0.111049473
+44,9.965126313,R_DM,right Hypothalamus,230.0037835,0.043325923
+46,28.1609547,R_AHA,right Hypothalamus,230.0037835,0.122436919
+29,578.6312871,Right.Accumbens.area,right Nucleus accumbens,578.6312871,1
+125,336.7128713,rh_R_PHA2_ROI_volume,right Perirhinal area,5815.359406,0.057900612
+153,2267.034653,rh_R_PeEc_ROI_volume,right Perirhinal area,5815.359406,0.389835691
+157,2721.392079,rh_R_TF_ROI_volume,right Perirhinal area,5815.359406,0.467966275
+159,490.219802,rh_R_PHA3_ROI_volume,right Perirhinal area,5815.359406,0.084297421
+149,786.1811881,rh_R_Pir_ROI_volume,right Piriform cortex,786.1811881,1
+181,937.1168317,rh_R_5m_ROI_volume,right Posterior parietal association areas,3043.047525,0.3079534
+183,1032.643564,rh_R_5mv_ROI_volume,right Posterior parietal association areas,3043.047525,0.339345198
+185,1073.287129,rh_R_5L_ROI_volume,right Posterior parietal association areas,3043.047525,0.352701402
+89,388.1217822,rh_R_A1_ROI_volume,right Primary auditory area,388.1217822,1
+61,4978.136634,rh_R_4_ROI_volume,right Primary motor area,4978.136634,1
+71,1032.120792,rh_R_3a_ROI_volume,right Primary somatosensory area,8904.369307,0.115911723
+74,2105.290099,rh_R_3b_ROI_volume,right Primary somatosensory area,8904.369307,0.236433376
+91,3097.390099,rh_R_1_ROI_volume,right Primary somatosensory area,8904.369307,0.347850588
+116,2669.568317,rh_R_2_ROI_volume,right Primary somatosensory area,8904.369307,0.299804312
+50,6778.59802,rh_R_V1_ROI_volume,right Primary visual area,6778.59802,1
+129,1047.29802,rh_R_RSC_ROI_volume,right Retrosplenial area,1047.29802,1
+155,518.2059406,rh_R_PreS_ROI_volume,right Subiculum,518.2059406,1
+165,2283.288119,rh_R_FFC_ROI_volume,right Temporal association areas,18494.04752,0.123460704
+167,1023.232673,rh_R_PIT_ROI_volume,right Temporal association areas,18494.04752,0.055327676
+169,2202.611881,rh_R_TE1a_ROI_volume,right Temporal association areas,18494.04752,0.119098422
+171,3284.576238,rh_R_TE1p_ROI_volume,right Temporal association areas,18494.04752,0.177601806
+173,3233.476238,rh_R_TE2a_ROI_volume,right Temporal association areas,18494.04752,0.174838755
+175,1375.992079,rh_R_STV_ROI_volume,right Temporal association areas,18494.04752,0.074401889
+177,1333.753465,rh_R_STSvp_ROI_volume,right Temporal association areas,18494.04752,0.072117986
+179,1035.724752,rh_R_STSva_ROI_volume,right Temporal association areas,18494.04752,0.056003141
+5,7689.072475,Right.Thalamus,right Thalamus,7689.072475,1
+161,876.2425743,rh_R_10r_ROI_volume,right Ventral orbital area,2602.140594,0.336739136
+163,1725.89802,rh_R_10v_ROI_volume,right Ventral orbital area,2602.140594,0.663260864
